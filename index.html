@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Radio Tower Walkie-Talkie</title>
+    
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+
+    <style>
+        body { font-family: sans-serif; text-align: center; padding: 20px; background-color: #f4f4f9; }
+        .container { max-width: 400px; margin: auto; padding: 20px; background: white; border: 1px solid #ccc; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        select, input, button { padding: 10px; margin: 10px 0; width: 90%; font-size: 16px; border-radius: 5px; border: 1px solid #ccc;}
+        
+        #dashboard { display: none; } /* Hidden until connected */
+        
+        .status-box { background: #e9ecef; padding: 10px; border-radius: 5px; margin-bottom: 20px; }
+        .status-box p { margin: 5px 0; font-weight: bold; }
+
+        /* Push-to-talk button styling */
+        #ptt-btn {
+            background-color: #555; color: white; height: 120px; border-radius: 60px;
+            border: none; cursor: pointer; user-select: none; font-size: 18px; font-weight: bold;
+            transition: 0.2s; width: 90%;
+        }
+        #ptt-btn:active:not(:disabled) { background-color: #28a745; transform: scale(0.95); } /* Green when talking */
+        #ptt-btn:disabled { background-color: #dc3545; cursor: not-allowed; opacity: 0.7; } /* Red when locked */
+
+        #leave-btn { background-color: #6c757d; color: white; border: none; cursor: pointer; margin-top: 15px;}
+        #leave-btn:hover { background-color: #5a6268; }
+        
+        .divider { font-size: 14px; color: #777; margin: 5px 0; }
+    </style>
+</head>
+<body>
+
+<div class="container" id="setup-screen">
+    <h2>Connect to Radio Tower</h2>
+    <p>Select a pre-fixed channel or create your own.</p>
+    
+    <select id="channel-select">
+        <option value="General-Lobby">General Lobby</option>
+        <option value="Alpha-Squad">Alpha Squad</option>
+        <option value="Beta-Team">Beta Team</option>
+        <option value="Dispatch-Control">Dispatch Control</option>
+    </select>
+
+    <div class="divider">─ OR CREATE CUSTOM ─</div>
+
+    <input type="text" id="channel-custom" placeholder="Type custom channel name...">
+    
+    <button id="join-btn" style="background-color: #007bff; color: white; border: none;">Connect Radio</button>
+</div>
+
+<div class="container" id="dashboard">
+    <h2>Radio Tower</h2>
+    
+    <div class="status-box">
+        <p>Channel: <span id="ui-channel" style="color: #007bff;">...</span></p>
+        <p>Active Users: <span id="ui-count" style="color: #28a745;">1</span></p>
+        <p id="ui-who-talking" style="color: #dc3545; font-size: 14px;">Channel is open.</p>
+    </div>
+
+    <button id="ptt-btn" disabled>Waiting for Mic...</button>
+    
+    <button id="leave-btn">Leave Channel</button>
+    
+    <div id="audio-container"></div>
+</div>
+
+<script>
+    // ==========================================
+    // 1. FIREBASE CONFIG
+    // ==========================================
+    const firebaseConfig = {
+        apiKey: "AIzaSyAN2KhtSuruzJVAMbtM6AYF34TfNAzqtrk",
+        authDomain: "web-walkie-talkie.firebaseapp.com",
+        databaseURL: "https://web-walkie-talkie-default-rtdb.asia-southeast1.firebasedatabase.app",
+        projectId: "web-walkie-talkie",
+        storageBucket: "web-walkie-talkie.firebasestorage.app",
+        messagingSenderId: "540679406004",
+        appId: "1:540679406004:web:20d5ace367b173758af2e1"
+    };
+    
+    firebase.initializeApp(firebaseConfig);
+    const database = firebase.database();
+
+    // ==========================================
+    // 2. GLOBAL APP VARIABLES
+    // ==========================================
+    const myId = Math.floor(100000 + Math.random() * 900000).toString(); // Random 6-digit peer ID
+    const peer = new Peer(myId);
+    let localStream;
+    let currentChannel = "";
+    let connectedPeers = {}; // Track active call objects to close them on leave
+    
+    // Firebase references references stored globally to detach them later
+    let channelRef, myUserRef, talkingRef;
+
+    // UI Elements
+    const setupScreen = document.getElementById('setup-screen');
+    const dashboard = document.getElementById('dashboard');
+    const pttBtn = document.getElementById('ptt-btn');
+    const uiCount = document.getElementById('ui-count');
+    const uiWhoTalking = document.getElementById('ui-who-talking');
+
+    // ==========================================
+    // 3. JOINING A CHANNEL
+    // ==========================================
+    document.getElementById('join-btn').onclick = async () => {
+        const selectVal = document.getElementById('channel-select').value;
+        const customVal = document.getElementById('channel-custom').value.trim();
+        
+        // Prioritize custom name if typed; otherwise use the dropdown selection
+        currentChannel = customVal ? customVal.replace(/[^a-zA-Z0-9-_]/g, '') : selectVal;
+        
+        if(!currentChannel) return alert("Please select or type a valid channel name!");
+
+        // Request Mic Access
+        try {
+            if (!localStream) {
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            }
+            localStream.getAudioTracks()[0].enabled = false; // Keep muted until PTT is held
+            
+            setupScreen.style.display = 'none';
+            dashboard.style.display = 'block';
+            document.getElementById('ui-channel').innerText = currentChannel;
+            pttBtn.innerText = "Hold to Talk";
+            pttBtn.disabled = false;
+
+            connectToFirebaseTower();
+
+        } catch (err) {
+            alert("Microphone required! Please check your browser permissions.");
+            console.error(err);
+        }
+    };
+
+    // ==========================================
+    // 4. LEAVING A CHANNEL CLEANUP
+    // ==========================================
+    document.getElementById('leave-btn').onclick = () => {
+        leaveCurrentChannel();
+    };
+
+    function leaveCurrentChannel() {
+        if (!currentChannel) return;
+
+        // 1. If I am currently talking, clear the channel transmission lock
+        if (pttBtn.innerText === "Transmitting...") {
+            localStream.getAudioTracks()[0].enabled = false;
+            talkingRef.set(null);
+        }
+
+        // 2. Remove database listeners and user entry from Firebase
+        if (myUserRef) myUserRef.remove();
+        if (channelRef) channelRef.child('users').off();
+        if (talkingRef) talkingRef.off();
+
+        // 3. Close all active peer connections
+        Object.keys(connectedPeers).forEach(userId => {
+            if (connectedPeers[userId] && connectedPeers[userId].close) {
+                connectedPeers[userId].close();
+            }
+        });
+        connectedPeers = {};
+
+        // 4. Clear UI elements & reset audio tags
+        document.getElementById('audio-container').innerHTML = "";
+        currentChannel = "";
+        
+        // 5. Swap visibility back to setup screen
+        dashboard.style.display = 'none';
+        setupScreen.style.display = 'block';
+        document.getElementById('channel-custom').value = ""; // Clear input field
+    }
+
+    // ==========================================
+    // 5. FIREBASE TOWER REALTIME LOGIC
+    // ==========================================
+    function connectToFirebaseTower() {
+        channelRef = database.ref(`channels/${currentChannel}`);
+        myUserRef = channelRef.child(`users/${myId}`);
+        talkingRef = channelRef.child('currently_talking');
+
+        // Write user to active user list
+        myUserRef.set(true);
+        myUserRef.onDisconnect().remove();
+
+        // Track user presence counts and establish connections
+        channelRef.child('users').on('value', (snapshot) => {
+            const users = snapshot.val() || {};
+            uiCount.innerText = Object.keys(users).length;
+            
+            // Connect to any user inside this specific channel
+            Object.keys(users).forEach(userId => {
+                if(userId !== myId) {
+                    callUser(userId);
+                }
+            });
+        });
+
+        // Push-to-Talk Lock Synchronization
+        talkingRef.on('value', (snapshot) => {
+            const talkerId = snapshot.val();
+            
+            if (talkerId && talkerId !== myId) {
+                pttBtn.disabled = true;
+                pttBtn.innerText = "Channel Busy...";
+                uiWhoTalking.innerText = `User ${talkerId} is transmitting...`;
+            } else {
+                pttBtn.disabled = false;
+                pttBtn.innerText = talkerId === myId ? "Transmitting..." : "Hold to Talk";
+                uiWhoTalking.innerText = talkerId === myId ? "You are transmitting." : "Channel is open.";
+            }
+        });
+
+        // Trigger Transmission Mute/Unmute
+        const startTalking = () => {
+            if(pttBtn.disabled) return;
+            localStream.getAudioTracks()[0].enabled = true; 
+            talkingRef.set(myId); 
+        };
+
+        const stopTalking = () => {
+            if(!localStream) return;
+            localStream.getAudioTracks()[0].enabled = false; 
+            talkingRef.once('value').then(snap => {
+                if(snap.val() === myId) talkingRef.set(null); 
+            });
+        };
+
+        // Wire Up System Interaction Events (Touch + Mouse)
+        pttBtn.addEventListener('mousedown', startTalking);
+        pttBtn.addEventListener('mouseup', stopTalking);
+        pttBtn.addEventListener('mouseleave', stopTalking);
+        pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startTalking(); });
+        pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopTalking(); });
+    }
+
+    // ==========================================
+    // 6. AUDIO ROUTING (PEERJS)
+    // ==========================================
+    function callUser(userId) {
+        if(connectedPeers[userId]) return; 
+        const call = peer.call(userId, localStream);
+        handleCall(call, userId);
+    }
+
+    peer.on('call', (call) => {
+        call.answer(localStream);
+        handleCall(call, call.peer);
+    });
+
+    function handleCall(call, userId) {
+        connectedPeers[userId] = call; // Cache reference to allow proper hang-ups later
+
+        call.on('stream', (remoteStream) => {
+            if (!document.getElementById(`audio-${userId}`)) {
+                const audioObj = document.createElement('audio');
+                audioObj.id = `audio-${userId}`;
+                audioObj.srcObject = remoteStream;
+                audioObj.autoplay = true;
+                document.getElementById('audio-container').appendChild(audioObj);
+            }
+        });
+
+        // If the remote user leaves, remove their audio container element
+        call.on('close', () => {
+            const audioObj = document.getElementById(`audio-${userId}`);
+            if (audioObj) audioObj.remove();
+            delete connectedPeers[userId];
+        });
+    }
+</script>
+
+</body>
+</html>
