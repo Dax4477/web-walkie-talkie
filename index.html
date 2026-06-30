@@ -89,15 +89,28 @@
     const database = firebase.database();
 
     // ==========================================
-    // 2. GLOBAL APP VARIABLES
+    // 2. GLOBAL APP VARIABLES (WITH STUN SERVERS)
     // ==========================================
     const myId = Math.floor(100000 + Math.random() * 900000).toString(); // Random 6-digit peer ID
-    const peer = new Peer(myId);
+    
+    // Inject Google's public STUN servers to bypass basic firewalls and NAT
+    const peer = new Peer(myId, {
+        config: {
+            'iceServers': [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' },
+                { urls: 'stun:stun3.l.google.com:19302' },
+                { urls: 'stun:stun4.l.google.com:19302' }
+            ]
+        }
+    });
+
     let localStream;
     let currentChannel = "";
     let connectedPeers = {}; // Track active call objects to close them on leave
     
-    // Firebase references references stored globally to detach them later
+    // Firebase references stored globally to detach them later
     let channelRef, myUserRef, talkingRef;
 
     // UI Elements
