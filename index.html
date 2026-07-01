@@ -89,19 +89,31 @@
     const database = firebase.database();
 
     // ==========================================
-    // 2. GLOBAL APP VARIABLES (WITH STUN SERVERS)
+    // 2. GLOBAL APP VARIABLES (WITH STUN & TURN RELAY)
     // ==========================================
     const myId = Math.floor(100000 + Math.random() * 900000).toString(); // Random 6-digit peer ID
     
-    // Inject Google's public STUN servers to bypass basic firewalls and NAT
+    // Inject Google's STUN and your Metered TURN server to bypass firewalls
     const peer = new Peer(myId, {
         config: {
             'iceServers': [
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun2.l.google.com:19302' },
-                { urls: 'stun:stun3.l.google.com:19302' },
-                { urls: 'stun:stun4.l.google.com:19302' }
+                {
+                    urls: 'turn:global.relay.metered.ca:80',
+                    username: '6aab54034dc79a1202170b90',
+                    credential: 'mgAvGdQTO/UdvH3p'
+                },
+                {
+                    urls: 'turn:global.relay.metered.ca:443',
+                    username: '6aab54034dc79a1202170b90',
+                    credential: 'mgAvGdQTO/UdvH3p'
+                },
+                {
+                    urls: 'turn:global.relay.metered.ca:443?transport=tcp',
+                    username: '6aab54034dc79a1202170b90',
+                    credential: 'mgAvGdQTO/UdvH3p'
+                }
             ]
         }
     });
@@ -127,17 +139,15 @@
         const selectVal = document.getElementById('channel-select').value;
         const customVal = document.getElementById('channel-custom').value.trim();
         
-        // Prioritize custom name if typed; otherwise use the dropdown selection
         currentChannel = customVal ? customVal.replace(/[^a-zA-Z0-9-_]/g, '') : selectVal;
         
         if(!currentChannel) return alert("Please select or type a valid channel name!");
 
-        // Request Mic Access
         try {
             if (!localStream) {
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
             }
-            localStream.getAudioTracks()[0].enabled = false; // Keep muted until PTT is held
+            localStream.getAudioTracks()[0].enabled = false; 
             
             setupScreen.style.display = 'none';
             dashboard.style.display = 'block';
@@ -163,18 +173,15 @@
     function leaveCurrentChannel() {
         if (!currentChannel) return;
 
-        // 1. If I am currently talking, clear the channel transmission lock
         if (pttBtn.innerText === "Transmitting...") {
             localStream.getAudioTracks()[0].enabled = false;
             talkingRef.set(null);
         }
 
-        // 2. Remove database listeners and user entry from Firebase
         if (myUserRef) myUserRef.remove();
         if (channelRef) channelRef.child('users').off();
         if (talkingRef) talkingRef.off();
 
-        // 3. Close all active peer connections
         Object.keys(connectedPeers).forEach(userId => {
             if (connectedPeers[userId] && connectedPeers[userId].close) {
                 connectedPeers[userId].close();
@@ -182,14 +189,12 @@
         });
         connectedPeers = {};
 
-        // 4. Clear UI elements & reset audio tags
         document.getElementById('audio-container').innerHTML = "";
         currentChannel = "";
         
-        // 5. Swap visibility back to setup screen
         dashboard.style.display = 'none';
         setupScreen.style.display = 'block';
-        document.getElementById('channel-custom').value = ""; // Clear input field
+        document.getElementById('channel-custom').value = ""; 
     }
 
     // ==========================================
@@ -200,16 +205,13 @@
         myUserRef = channelRef.child(`users/${myId}`);
         talkingRef = channelRef.child('currently_talking');
 
-        // Write user to active user list
         myUserRef.set(true);
         myUserRef.onDisconnect().remove();
 
-        // Track user presence counts and establish connections
         channelRef.child('users').on('value', (snapshot) => {
             const users = snapshot.val() || {};
             uiCount.innerText = Object.keys(users).length;
             
-            // Connect to any user inside this specific channel
             Object.keys(users).forEach(userId => {
                 if(userId !== myId) {
                     callUser(userId);
@@ -217,7 +219,6 @@
             });
         });
 
-        // Push-to-Talk Lock Synchronization
         talkingRef.on('value', (snapshot) => {
             const talkerId = snapshot.val();
             
@@ -232,7 +233,6 @@
             }
         });
 
-        // Trigger Transmission Mute/Unmute
         const startTalking = () => {
             if(pttBtn.disabled) return;
             localStream.getAudioTracks()[0].enabled = true; 
@@ -247,7 +247,6 @@
             });
         };
 
-        // Wire Up System Interaction Events (Touch + Mouse)
         pttBtn.addEventListener('mousedown', startTalking);
         pttBtn.addEventListener('mouseup', stopTalking);
         pttBtn.addEventListener('mouseleave', stopTalking);
@@ -270,7 +269,7 @@
     });
 
     function handleCall(call, userId) {
-        connectedPeers[userId] = call; // Cache reference to allow proper hang-ups later
+        connectedPeers[userId] = call; 
 
         call.on('stream', (remoteStream) => {
             if (!document.getElementById(`audio-${userId}`)) {
@@ -282,7 +281,6 @@
             }
         });
 
-        // If the remote user leaves, remove their audio container element
         call.on('close', () => {
             const audioObj = document.getElementById(`audio-${userId}`);
             if (audioObj) audioObj.remove();
