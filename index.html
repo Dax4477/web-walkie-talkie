@@ -15,19 +15,18 @@
         .container { max-width: 400px; margin: auto; padding: 20px; background: white; border: 1px solid #ccc; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
         select, input, button { padding: 10px; margin: 10px 0; width: 90%; font-size: 16px; border-radius: 5px; border: 1px solid #ccc;}
         
-        #dashboard { display: none; } /* Hidden until connected */
+        #dashboard { display: none; } 
         
         .status-box { background: #e9ecef; padding: 10px; border-radius: 5px; margin-bottom: 20px; }
         .status-box p { margin: 5px 0; font-weight: bold; }
 
-        /* Push-to-talk button styling */
         #ptt-btn {
             background-color: #555; color: white; height: 120px; border-radius: 60px;
             border: none; cursor: pointer; user-select: none; font-size: 18px; font-weight: bold;
             transition: 0.2s; width: 90%;
         }
-        #ptt-btn:active:not(:disabled) { background-color: #28a745; transform: scale(0.95); } /* Green when talking */
-        #ptt-btn:disabled { background-color: #dc3545; cursor: not-allowed; opacity: 0.7; } /* Red when locked */
+        #ptt-btn:active:not(:disabled) { background-color: #28a745; transform: scale(0.95); } 
+        #ptt-btn:disabled { background-color: #dc3545; cursor: not-allowed; opacity: 0.7; } 
 
         #leave-btn { background-color: #6c757d; color: white; border: none; cursor: pointer; margin-top: 15px;}
         #leave-btn:hover { background-color: #5a6268; }
@@ -72,9 +71,7 @@
 </div>
 
 <script>
-    // ==========================================
     // 1. FIREBASE CONFIG
-    // ==========================================
     const firebaseConfig = {
         apiKey: "AIzaSyAN2KhtSuruzJVAMbtM6AYF34TfNAzqtrk",
         authDomain: "web-walkie-talkie.firebaseapp.com",
@@ -88,12 +85,9 @@
     firebase.initializeApp(firebaseConfig);
     const database = firebase.database();
 
-    // ==========================================
-    // 2. GLOBAL APP VARIABLES (WITH STUN & TURN RELAY)
-    // ==========================================
-    const myId = Math.floor(100000 + Math.random() * 900000).toString(); // Random 6-digit peer ID
+    // 2. GLOBAL APP VARIABLES (WITH TURN RELAY)
+    const myId = Math.floor(100000 + Math.random() * 900000).toString(); 
     
-    // Inject Google's STUN and your Metered TURN server to bypass firewalls
     const peer = new Peer(myId, {
         config: {
             'iceServers': [
@@ -118,23 +112,25 @@
         }
     });
 
+    // --- NEW: ERROR DETECTOR ---
+    peer.on('error', (err) => {
+        console.error("PeerJS Error:", err);
+        alert("Connection Error Detected: " + err.type);
+    });
+
     let localStream;
     let currentChannel = "";
-    let connectedPeers = {}; // Track active call objects to close them on leave
+    let connectedPeers = {}; 
     
-    // Firebase references stored globally to detach them later
     let channelRef, myUserRef, talkingRef;
 
-    // UI Elements
     const setupScreen = document.getElementById('setup-screen');
     const dashboard = document.getElementById('dashboard');
     const pttBtn = document.getElementById('ptt-btn');
     const uiCount = document.getElementById('ui-count');
     const uiWhoTalking = document.getElementById('ui-who-talking');
 
-    // ==========================================
     // 3. JOINING A CHANNEL
-    // ==========================================
     document.getElementById('join-btn').onclick = async () => {
         const selectVal = document.getElementById('channel-select').value;
         const customVal = document.getElementById('channel-custom').value.trim();
@@ -163,9 +159,7 @@
         }
     };
 
-    // ==========================================
-    // 4. LEAVING A CHANNEL CLEANUP
-    // ==========================================
+    // 4. LEAVING A CHANNEL
     document.getElementById('leave-btn').onclick = () => {
         leaveCurrentChannel();
     };
@@ -197,9 +191,7 @@
         document.getElementById('channel-custom').value = ""; 
     }
 
-    // ==========================================
-    // 5. FIREBASE TOWER REALTIME LOGIC
-    // ==========================================
+    // 5. FIREBASE LOGIC
     function connectToFirebaseTower() {
         channelRef = database.ref(`channels/${currentChannel}`);
         myUserRef = channelRef.child(`users/${myId}`);
@@ -254,9 +246,7 @@
         pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopTalking(); });
     }
 
-    // ==========================================
-    // 6. AUDIO ROUTING (PEERJS)
-    // ==========================================
+    // 6. AUDIO ROUTING (UPDATED FOR MOBILE FIX)
     function callUser(userId) {
         if(connectedPeers[userId]) return; 
         const call = peer.call(userId, localStream);
@@ -277,7 +267,16 @@
                 audioObj.id = `audio-${userId}`;
                 audioObj.srcObject = remoteStream;
                 audioObj.autoplay = true;
+                
+                // NEW: Crucial fixes for iOS/Mobile browsers
+                audioObj.playsInline = true; 
+                
                 document.getElementById('audio-container').appendChild(audioObj);
+                
+                // NEW: Force the browser to play it, catch block prevents crashes
+                audioObj.play().catch(e => {
+                    console.error("Audio block by browser:", e);
+                });
             }
         });
 
