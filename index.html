@@ -5,8 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Radio Tower Walkie-Talkie</title>
     
-    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
-    
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 
@@ -71,7 +69,9 @@
 </div>
 
 <script>
+    // ==========================================
     // 1. FIREBASE CONFIG
+    // ==========================================
     const firebaseConfig = {
         apiKey: "AIzaSyAN2KhtSuruzJVAMbtM6AYF34TfNAzqtrk",
         authDomain: "web-walkie-talkie.firebaseapp.com",
@@ -85,42 +85,25 @@
     firebase.initializeApp(firebaseConfig);
     const database = firebase.database();
 
-    // 2. GLOBAL APP VARIABLES (WITH TURN RELAY)
+    // ==========================================
+    // 2. PURE WEBRTC GLOBAL VARIABLES
+    // ==========================================
     const myId = Math.floor(100000 + Math.random() * 900000).toString(); 
     
-    const peer = new Peer(myId, {
-        config: {
-            'iceServers': [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-                {
-                    urls: 'turn:global.relay.metered.ca:80',
-                    username: '6aab54034dc79a1202170b90',
-                    credential: 'mgAvGdQTO/UdvH3p'
-                },
-                {
-                    urls: 'turn:global.relay.metered.ca:443',
-                    username: '6aab54034dc79a1202170b90',
-                    credential: 'mgAvGdQTO/UdvH3p'
-                },
-                {
-                    urls: 'turn:global.relay.metered.ca:443?transport=tcp',
-                    username: '6aab54034dc79a1202170b90',
-                    credential: 'mgAvGdQTO/UdvH3p'
-                }
-            ]
-        }
-    });
-
-    // --- NEW: ERROR DETECTOR ---
-    peer.on('error', (err) => {
-        console.error("PeerJS Error:", err);
-        alert("Connection Error Detected: " + err.type);
-    });
+    // Metered TURN Servers
+    const rtcConfig = {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'turn:global.relay.metered.ca:80', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' },
+            { urls: 'turn:global.relay.metered.ca:443', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' },
+            { urls: 'turn:global.relay.metered.ca:443?transport=tcp', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' }
+        ]
+    };
 
     let localStream;
     let currentChannel = "";
-    let connectedPeers = {}; 
+    let peers = {}; // Holds raw WebRTC connections
     
     let channelRef, myUserRef, talkingRef;
 
@@ -130,20 +113,21 @@
     const uiCount = document.getElementById('ui-count');
     const uiWhoTalking = document.getElementById('ui-who-talking');
 
+    // ==========================================
     // 3. JOINING A CHANNEL
+    // ==========================================
     document.getElementById('join-btn').onclick = async () => {
         const selectVal = document.getElementById('channel-select').value;
         const customVal = document.getElementById('channel-custom').value.trim();
         
         currentChannel = customVal ? customVal.replace(/[^a-zA-Z0-9-_]/g, '') : selectVal;
-        
         if(!currentChannel) return alert("Please select or type a valid channel name!");
 
         try {
             if (!localStream) {
                 localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
             }
-            localStream.getAudioTracks()[0].enabled = false; 
+            localStream.getAudioTracks()[0].enabled = false; // Muted by default
             
             setupScreen.style.display = 'none';
             dashboard.style.display = 'block';
@@ -159,12 +143,10 @@
         }
     };
 
-    // 4. LEAVING A CHANNEL
+    // ==========================================
+    // 4. LEAVING A CHANNEL CLEANUP
+    // ==========================================
     document.getElementById('leave-btn').onclick = () => {
-        leaveCurrentChannel();
-    };
-
-    function leaveCurrentChannel() {
         if (!currentChannel) return;
 
         if (pttBtn.innerText === "Transmitting...") {
@@ -172,45 +154,109 @@
             talkingRef.set(null);
         }
 
-        if (myUserRef) myUserRef.remove();
-        if (channelRef) channelRef.child('users').off();
-        if (talkingRef) talkingRef.off();
+        // Close all raw WebRTC connections
+        Object.values(peers).forEach(pc => pc.close());
+        peers = {};
 
-        Object.keys(connectedPeers).forEach(userId => {
-            if (connectedPeers[userId] && connectedPeers[userId].close) {
-                connectedPeers[userId].close();
-            }
-        });
-        connectedPeers = {};
+        // Turn off all Firebase listeners
+        if (myUserRef) {
+            myUserRef.child('offers').off();
+            myUserRef.child('answers').off();
+            myUserRef.child('candidates').off();
+            myUserRef.remove();
+        }
+        if (channelRef) {
+            channelRef.child('users').off();
+            talkingRef.off();
+        }
 
         document.getElementById('audio-container').innerHTML = "";
         currentChannel = "";
-        
         dashboard.style.display = 'none';
         setupScreen.style.display = 'block';
         document.getElementById('channel-custom').value = ""; 
-    }
+    };
 
-    // 5. FIREBASE LOGIC
-    function connectToFirebaseTower() {
+    // ==========================================
+    // 5. FIREBASE SIGNALING TOWER
+    // ==========================================
+    async function connectToFirebaseTower() {
         channelRef = database.ref(`channels/${currentChannel}`);
         myUserRef = channelRef.child(`users/${myId}`);
         talkingRef = channelRef.child('currently_talking');
 
-        myUserRef.set(true);
+        // Clear out any old connection data just in case, then announce presence
+        await myUserRef.set(null);
+        myUserRef.child('presence').set(true);
         myUserRef.onDisconnect().remove();
 
+        // Track live users
         channelRef.child('users').on('value', (snapshot) => {
-            const users = snapshot.val() || {};
-            uiCount.innerText = Object.keys(users).length;
+            uiCount.innerText = snapshot.numChildren();
+        });
+
+        // 5a. Automatically call new users who join (Mesh Network)
+        channelRef.child('users').on('child_added', (snapshot) => {
+            const partnerId = snapshot.key;
+            // To prevent double-calling, only the older user initiates the call
+            if (partnerId !== myId && myId > partnerId) {
+                initiateCall(partnerId);
+            }
+        });
+
+        // 5b. Cleanup if someone leaves
+        channelRef.child('users').on('child_removed', (snapshot) => {
+            const partnerId = snapshot.key;
+            if (peers[partnerId]) {
+                peers[partnerId].close();
+                delete peers[partnerId];
+            }
+            const audioObj = document.getElementById(`audio-${partnerId}`);
+            if (audioObj) audioObj.remove();
+        });
+
+        // --- THE MAGIC: FIREBASE REPLACING PEERJS ---
+        
+        // Listen for incoming offers from friends
+        myUserRef.child('offers').on('child_added', async (snapshot) => {
+            const partnerId = snapshot.key;
+            const offer = snapshot.val();
             
-            Object.keys(users).forEach(userId => {
-                if(userId !== myId) {
-                    callUser(userId);
-                }
+            const pc = createPeerConnection(partnerId);
+            await pc.setRemoteDescription(new RTCSessionDescription(offer));
+            
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            
+            // Send our answer back via Firebase
+            database.ref(`channels/${currentChannel}/users/${partnerId}/answers/${myId}`).set({
+                type: answer.type,
+                sdp: answer.sdp
             });
         });
 
+        // Listen for answers to calls we initiated
+        myUserRef.child('answers').on('child_added', async (snapshot) => {
+            const partnerId = snapshot.key;
+            const answer = snapshot.val();
+            const pc = peers[partnerId];
+            if (pc) {
+                await pc.setRemoteDescription(new RTCSessionDescription(answer));
+            }
+        });
+
+        // Listen for network firewall bypass codes (ICE Candidates)
+        myUserRef.child('candidates').on('child_added', (snapshot) => {
+            const data = snapshot.val();
+            const pc = peers[data.sender];
+            if (pc && data.candidate) {
+                pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(console.error);
+            }
+        });
+
+        // ==========================================
+        // 6. PUSH-TO-TALK LOCK
+        // ==========================================
         talkingRef.on('value', (snapshot) => {
             const talkerId = snapshot.val();
             
@@ -246,44 +292,54 @@
         pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopTalking(); });
     }
 
-    // 6. AUDIO ROUTING (UPDATED FOR MOBILE FIX)
-    function callUser(userId) {
-        if(connectedPeers[userId]) return; 
-        const call = peer.call(userId, localStream);
-        handleCall(call, userId);
-    }
+    // ==========================================
+    // 7. PURE WEBRTC CONNECTION BUILDER
+    // ==========================================
+    function createPeerConnection(partnerId) {
+        const pc = new RTCPeerConnection(rtcConfig);
+        peers[partnerId] = pc;
 
-    peer.on('call', (call) => {
-        call.answer(localStream);
-        handleCall(call, call.peer);
-    });
+        // Add our microphone stream to the connection
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
-    function handleCall(call, userId) {
-        connectedPeers[userId] = call; 
-
-        call.on('stream', (remoteStream) => {
-            if (!document.getElementById(`audio-${userId}`)) {
-                const audioObj = document.createElement('audio');
-                audioObj.id = `audio-${userId}`;
-                audioObj.srcObject = remoteStream;
-                audioObj.autoplay = true;
-                
-                // NEW: Crucial fixes for iOS/Mobile browsers
-                audioObj.playsInline = true; 
-                
-                document.getElementById('audio-container').appendChild(audioObj);
-                
-                // NEW: Force the browser to play it, catch block prevents crashes
-                audioObj.play().catch(e => {
-                    console.error("Audio block by browser:", e);
+        // When the Metered TURN server gives us a path through the firewall, send it to our friend via Firebase
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                database.ref(`channels/${currentChannel}/users/${partnerId}/candidates`).push({
+                    sender: myId,
+                    candidate: event.candidate.toJSON()
                 });
             }
-        });
+        };
 
-        call.on('close', () => {
-            const audioObj = document.getElementById(`audio-${userId}`);
-            if (audioObj) audioObj.remove();
-            delete connectedPeers[userId];
+        // When we successfully receive our friend's audio stream
+        pc.ontrack = (event) => {
+            if (!document.getElementById(`audio-${partnerId}`)) {
+                const audioObj = document.createElement('audio');
+                audioObj.id = `audio-${partnerId}`;
+                audioObj.srcObject = event.streams[0];
+                audioObj.autoplay = true;
+                audioObj.playsInline = true; // Crucial for iPhone Safari
+                document.getElementById('audio-container').appendChild(audioObj);
+                
+                // Force playback
+                audioObj.play().catch(e => console.error("Audio block:", e));
+            }
+        };
+
+        return pc;
+    }
+
+    // Start a call
+    async function initiateCall(partnerId) {
+        const pc = createPeerConnection(partnerId);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        
+        // Send the offer via Firebase
+        database.ref(`channels/${currentChannel}/users/${partnerId}/offers/${myId}`).set({
+            type: offer.type,
+            sdp: offer.sdp
         });
     }
 </script>
