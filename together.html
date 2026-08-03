@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>E2EE Comms: Walkie & Call</title>
+    
+    <!-- Firebase v8 -->
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+
+    <style>
+        body { font-family: sans-serif; text-align: center; padding: 20px; background-color: #f4f4f9; }
+        .container { max-width: 400px; margin: auto; padding: 20px; background: white; border: 1px solid #ccc; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        select, input, button { padding: 10px; margin: 10px 0; width: 90%; font-size: 16px; border-radius: 5px; border: 1px solid #ccc; box-sizing: border-box;}
+        
+        #dashboard { display: none; } 
+        
+        .status-box { background: #e9ecef; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+        .status-box p { margin: 5px 0; font-weight: bold; }
+
+        /* Mode Selection Styling */
+        .mode-selector { display: flex; justify-content: space-around; margin: 15px 0; background: #eee; padding: 10px; border-radius: 5px; }
+        .mode-selector label { font-weight: bold; cursor: pointer; }
+        .mode-selector input { width: auto; margin-right: 5px; }
+
+        /* Walkie Talkie Button */
+        #ptt-btn {
+            background-color: #555; color: white; height: 120px; border-radius: 60px;
+            border: none; cursor: pointer; user-select: none; font-size: 18px; font-weight: bold;
+            transition: 0.2s; width: 90%; -webkit-tap-highlight-color: transparent;
+        }
+        #ptt-btn:active:not(:disabled) { background-color: #28a745; transform: scale(0.95); } 
+        #ptt-btn:disabled { background-color: #dc3545; cursor: not-allowed; opacity: 0.7; } 
+
+        /* Standard Call Button */
+        #mute-btn {
+            background-color: #28a745; color: white; height: 60px; border-radius: 30px;
+            border: none; cursor: pointer; user-select: none; font-size: 18px; font-weight: bold;
+            transition: 0.2s; width: 90%; margin-top: 10px;
+        }
+        #mute-btn.muted { background-color: #dc3545; }
+
+        #leave-btn { background-color: #6c757d; color: white; border: none; cursor: pointer; margin-top: 15px; height: 50px; border-radius: 25px; font-size: 16px;}
+        #leave-btn:hover { background-color: #5a6268; }
+        
+        .divider { font-size: 14px; color: #777; margin: 15px 0; }
+        
+        #debug-log { font-size: 11px; color: #666; margin-top: 20px; text-align: left; max-height: 100px; overflow-y: auto; background: #eee; padding: 5px; border-radius: 4px;}
+        
+        /* Utility Classes */
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+<!-- SETUP SCREEN -->
+<div class="container" id="setup-screen">
+    <h2>Secure Comms Tower</h2>
+    
+    <div class="mode-selector">
+        <label>
+            <input type="radio" name="comm-mode" value="walkie" checked> 📻 Walkie-Talkie
+        </label>
+        <label>
+            <input type="radio" name="comm-mode" value="call"> 📞 Standard Call
+        </label>
+    </div>
+
+    <p>Select or create a room.</p>
+    
+    <select id="channel-select">
+        <option value="General-Lobby">General Lobby</option>
+        <option value="Alpha-Squad">Alpha Squad</option>
+        <option value="Private-Room">Private Room</option>
+    </select>
+
+    <div class="divider">─ OR CREATE CUSTOM ─</div>
+
+    <input type="text" id="channel-custom" placeholder="Type custom room name...">
+    
+    <button id="join-btn" style="background-color: #007bff; color: white; border: none; font-weight: bold;">Connect</button>
+</div>
+
+<!-- DASHBOARD SCREEN -->
+<div class="container" id="dashboard">
+    <h2 id="dashboard-title">Live Comms</h2>
+    
+    <div class="status-box">
+        <p>Mode: <span id="ui-mode-badge" style="color: #666;">...</span></p>
+        <p>Room: <span id="ui-channel" style="color: #007bff;">...</span></p>
+        <p>Active Users: <span id="ui-count" style="color: #28a745;">1</span></p>
+        
+        <!-- Walkie Talkie specific status -->
+        <div id="walkie-status-container">
+            <p id="ui-who-talking" style="color: #dc3545; font-size: 14px;">Channel is open.</p>
+        </div>
+    </div>
+
+    <!-- Walkie Talkie Controls -->
+    <div id="walkie-controls" class="hidden">
+        <button id="ptt-btn" disabled>Waiting for Mic...</button>
+    </div>
+
+    <!-- Standard Call Controls -->
+    <div id="call-controls" class="hidden">
+        <button id="mute-btn">Mute Microphone</button>
+    </div>
+    
+    <button id="leave-btn">Disconnect</button>
+    
+    <div id="audio-container"></div>
+    <div id="debug-log">System initialized...</div>
+</div>
+
+<script>
+    function logMessage(msg) {
+        console.log(msg);
+        const logDiv = document.getElementById('debug-log');
+        logDiv.innerHTML += `<br>[${new Date().toLocaleTimeString()}] ${msg}`;
+        logDiv.scrollTop = logDiv.scrollHeight;
+    }
+
+    // ==========================================
+    // 1. FIREBASE CONFIGURATION
+    // ==========================================
+    const firebaseConfig = {
+        apiKey: "AIzaSyAN2KhtSuruzJVAMbtM6AYF34TfNAzqtrk",
+        authDomain: "web-walkie-talkie.firebaseapp.com",
+        databaseURL: "https://web-walkie-talkie-default-rtdb.asia-southeast1.firebasedatabase.app",
+        projectId: "web-walkie-talkie",
+        storageBucket: "web-walkie-talkie.firebasestorage.app",
+        messagingSenderId: "540679406004",
+        appId: "1:540679406004:web:20d5ace367b173758af2e1"
+    };
+    
+    if (!firebase.apps.length) {
+        firebase.initializeApp(firebaseConfig);
+    }
+    const database = firebase.database();
+
+    // ==========================================
+    // 2. GLOBAL VARIABLES
+    // ==========================================
+    const myId = Math.floor(100000 + Math.random() * 900000).toString(); 
+    
+    const rtcConfig = {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun.cloudflare.com:3478' },
+            { urls: 'turn:global.relay.metered.ca:80', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' },
+            { urls: 'turn:global.relay.metered.ca:443', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' },
+            { urls: 'turn:global.relay.metered.ca:443?transport=tcp', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' }
+        ],
+        iceCandidatePoolSize: 10
+    };
+
+    let localStream;
+    let currentChannel = "";
+    let actualDatabasePath = ""; // Prefixed with mode to isolate rooms
+    let selectedMode = "walkie";
+    let isMuted = false;
+    let peers = {}; 
+    
+    let channelRef, myUserRef, talkingRef;
+
+    // UI Elements
+    const setupScreen = document.getElementById('setup-screen');
+    const dashboard = document.getElementById('dashboard');
+    const uiCount = document.getElementById('ui-count');
+    
+    const walkieControls = document.getElementById('walkie-controls');
+    const callControls = document.getElementById('call-controls');
+    const walkieStatus = document.getElementById('walkie-status-container');
+    const pttBtn = document.getElementById('ptt-btn');
+    const muteBtn = document.getElementById('mute-btn');
+    const uiWhoTalking = document.getElementById('ui-who-talking');
+
+    // ==========================================
+    // 3. JOINING THE ROOM
+    // ==========================================
+    document.getElementById('join-btn').onclick = async () => {
+        const selectVal = document.getElementById('channel-select').value;
+        const customVal = document.getElementById('channel-custom').value.trim();
+        
+        currentChannel = customVal ? customVal.replace(/[^a-zA-Z0-9-_]/g, '') : selectVal;
+        if(!currentChannel) return alert("Please select or type a valid room name!");
+
+        selectedMode = document.querySelector('input[name="comm-mode"]:checked').value;
+        // Isolate rooms by mode so Walkie users don't mix with Call users
+        actualDatabasePath = `${selectedMode}_${currentChannel}`; 
+
+        try {
+            logMessage("Requesting microphone access...");
+            if (!localStream) {
+                localStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } 
+                });
+            }
+
+            // Configure initial microphone state based on mode
+            if (selectedMode === 'walkie') {
+                localStream.getAudioTracks()[0].enabled = false; 
+                logMessage("Walkie Mode: Mic acquired & muted.");
+            } else {
+                localStream.getAudioTracks()[0].enabled = true; 
+                isMuted = false;
+                muteBtn.innerText = "Mute Microphone";
+                muteBtn.classList.remove('muted');
+                logMessage("Call Mode: Mic acquired & active.");
+            }
+
+        } catch (err) {
+            alert("Microphone Error! Ensure you are on HTTPS and gave permission.");
+            logMessage(`Mic Error: ${err.message}`);
+            return;
+        }
+
+        // Configure Dashboard UI
+        setupScreen.style.display = 'none';
+        dashboard.style.display = 'block';
+        document.getElementById('ui-channel').innerText = currentChannel;
+        
+        if (selectedMode === 'walkie') {
+            document.getElementById('ui-mode-badge').innerText = "📻 Walkie-Talkie";
+            document.getElementById('dashboard-title').innerText = "Radio Tower";
+            walkieControls.classList.remove('hidden');
+            walkieStatus.classList.remove('hidden');
+            callControls.classList.add('hidden');
+            pttBtn.innerText = "Connecting...";
+        } else {
+            document.getElementById('ui-mode-badge').innerText = "📞 Group Call";
+            document.getElementById('dashboard-title').innerText = "Live Call";
+            callControls.classList.remove('hidden');
+            walkieControls.classList.add('hidden');
+            walkieStatus.classList.add('hidden');
+        }
+
+        try {
+            await connectToFirebaseTower();
+        } catch (err) {
+            alert("Database Error! Check your Firebase Security Rules.");
+            logMessage(`Firebase Error: ${err.message}`);
+        }
+    };
+
+    // ==========================================
+    // 4. FIREBASE SIGNALING & ROOM LOGIC
+    // ==========================================
+    async function connectToFirebaseTower() {
+        logMessage(`Connecting to room ${actualDatabasePath} as ID: ${myId}`);
+        channelRef = database.ref(`channels/${actualDatabasePath}`);
+        myUserRef = channelRef.child(`users/${myId}`);
+
+        await myUserRef.set(null);
+        await myUserRef.child('presence').set(true);
+        myUserRef.onDisconnect().remove();
+
+        // Track Active Users
+        channelRef.child('users').on('value', (snapshot) => {
+            uiCount.innerText = snapshot.numChildren();
+        });
+
+        // Setup Mesh Network P2P connections
+        channelRef.child('users').on('child_added', (snapshot) => {
+            const partnerId = snapshot.key;
+            if (partnerId !== myId && myId > partnerId) {
+                initiateCall(partnerId);
+            }
+        });
+
+        channelRef.child('users').on('child_removed', (snapshot) => {
+            const partnerId = snapshot.key;
+            removePeer(partnerId);
+        });
+        
+        // WebRTC Signaling Event Listeners
+        myUserRef.child('offers').on('child_added', async (snapshot) => {
+            const partnerId = snapshot.key;
+            const offer = snapshot.val();
+            const pc = createPeerConnection(partnerId);
+            await pc.setRemoteDescription(new RTCSessionDescription(offer));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            database.ref(`channels/${actualDatabasePath}/users/${partnerId}/answers/${myId}`).set({
+                type: answer.type, sdp: answer.sdp
+            });
+        });
+
+        myUserRef.child('answers').on('child_added', async (snapshot) => {
+            const partnerId = snapshot.key;
+            const pc = peers[partnerId];
+            if (pc) await pc.setRemoteDescription(new RTCSessionDescription(snapshot.val()));
+        });
+
+        myUserRef.child('candidates').on('child_added', (snapshot) => {
+            const data = snapshot.val();
+            const pc = peers[data.sender];
+            if (pc && data.candidate) pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(e => console.error(e));
+        });
+
+        // ==========================================
+        // MODE-SPECIFIC LOGIC BINDING
+        // ==========================================
+        if (selectedMode === 'walkie') {
+            setupWalkieTalkieLogic();
+        }
+    }
+
+    // ==========================================
+    // 5. WALKIE-TALKIE PUSH-TO-TALK LOGIC
+    // ==========================================
+    function setupWalkieTalkieLogic() {
+        talkingRef = channelRef.child('currently_talking');
+
+        talkingRef.on('value', (snapshot) => {
+            const talkerId = snapshot.val();
+            if (talkerId && talkerId !== myId) {
+                pttBtn.disabled = true;
+                pttBtn.innerText = "Channel Busy...";
+                uiWhoTalking.innerText = `User ${talkerId} is transmitting...`;
+            } else {
+                pttBtn.disabled = false;
+                pttBtn.innerText = talkerId === myId ? "Transmitting..." : "Hold to Talk";
+                uiWhoTalking.innerText = talkerId === myId ? "You are transmitting." : "Channel is open.";
+            }
+        });
+
+        const startTalking = () => {
+            if(pttBtn.disabled) return;
+            localStream.getAudioTracks()[0].enabled = true; 
+            talkingRef.set(myId); 
+        };
+
+        const stopTalking = () => {
+            if(!localStream) return;
+            localStream.getAudioTracks()[0].enabled = false; 
+            talkingRef.once('value').then(snap => {
+                if(snap.val() === myId) talkingRef.set(null); 
+            });
+        };
+
+        // Remove old listeners to prevent duplicates if user reconnects
+        const clone = pttBtn.cloneNode(true);
+        pttBtn.parentNode.replaceChild(clone, pttBtn);
+        const newPttBtn = document.getElementById('ptt-btn');
+
+        newPttBtn.addEventListener('mousedown', startTalking);
+        newPttBtn.addEventListener('mouseup', stopTalking);
+        newPttBtn.addEventListener('mouseleave', stopTalking);
+        newPttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startTalking(); }, {passive: false});
+        newPttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopTalking(); }, {passive: false});
+    }
+
+    // ==========================================
+    // 6. STANDARD CALL MUTE LOGIC
+    // ==========================================
+    muteBtn.onclick = () => {
+        if (!localStream || selectedMode !== 'call') return;
+        
+        isMuted = !isMuted;
+        localStream.getAudioTracks()[0].enabled = !isMuted; 
+        
+        if (isMuted) {
+            muteBtn.innerText = "Unmute Microphone";
+            muteBtn.classList.add('muted');
+        } else {
+            muteBtn.innerText = "Mute Microphone";
+            muteBtn.classList.remove('muted');
+        }
+    };
+
+    // ==========================================
+    // 7. WEBRTC CONNECTION BUILDER
+    // ==========================================
+    function createPeerConnection(partnerId) {
+        const pc = new RTCPeerConnection(rtcConfig);
+        peers[partnerId] = pc;
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                database.ref(`channels/${actualDatabasePath}/users/${partnerId}/candidates`).push({
+                    sender: myId, candidate: event.candidate.toJSON()
+                });
+            }
+        };
+
+        pc.oniceconnectionstatechange = () => {
+            if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') removePeer(partnerId);
+        };
+
+        pc.ontrack = (event) => {
+            if (!document.getElementById(`audio-${partnerId}`)) {
+                const audioObj = document.createElement('audio');
+                audioObj.id = `audio-${partnerId}`;
+                audioObj.srcObject = event.streams[0];
+                audioObj.autoplay = true;
+                audioObj.playsInline = true; 
+                document.getElementById('audio-container').appendChild(audioObj);
+                audioObj.play().catch(e => logMessage(`Audio Blocked: ${e.message}`));
+            }
+        };
+        return pc;
+    }
+
+    async function initiateCall(partnerId) {
+        const pc = createPeerConnection(partnerId);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        database.ref(`channels/${actualDatabasePath}/users/${partnerId}/offers/${myId}`).set({
+            type: offer.type, sdp: offer.sdp
+        });
+    }
+
+    function removePeer(partnerId) {
+        if (peers[partnerId]) {
+            peers[partnerId].close();
+            delete peers[partnerId];
+        }
+        const audioObj = document.getElementById(`audio-${partnerId}`);
+        if (audioObj) audioObj.remove();
+    }
+
+    // ==========================================
+    // 8. DISCONNECT / LEAVE ROOM
+    // ==========================================
+    document.getElementById('leave-btn').onclick = () => {
+        if (!currentChannel) return;
+        logMessage("Disconnecting...");
+
+        // Clean up stream if leaving Walkie mode while holding button
+        if (selectedMode === 'walkie' && localStream) {
+            localStream.getAudioTracks()[0].enabled = false;
+            if(talkingRef) talkingRef.set(null);
+        }
+
+        // Close WebRTC
+        Object.values(peers).forEach(pc => pc.close());
+        peers = {};
+
+        // Clean Firebase Listeners
+        if (myUserRef) {
+            myUserRef.child('offers').off();
+            myUserRef.child('answers').off();
+            myUserRef.child('candidates').off();
+            myUserRef.remove();
+        }
+        if (channelRef) channelRef.child('users').off();
+        if (talkingRef) talkingRef.off();
+
+        // Reset UI
+        document.getElementById('audio-container').innerHTML = "";
+        currentChannel = "";
+        actualDatabasePath = "";
+        dashboard.style.display = 'none';
+        setupScreen.style.display = 'block';
+        document.getElementById('channel-custom').value = ""; 
+    };
+</script>
+
+</body>
+</html>
