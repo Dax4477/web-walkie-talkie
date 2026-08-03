@@ -144,6 +144,7 @@
             return;
         }
 
+        // 1. Microphone Request Block
         try {
             logMessage("Requesting microphone access...");
             if (!localStream) {
@@ -157,17 +158,24 @@
             }
             localStream.getAudioTracks()[0].enabled = false; 
             logMessage("Microphone acquired & muted.");
-            
-            setupScreen.style.display = 'none';
-            dashboard.style.display = 'block';
-            document.getElementById('ui-channel').innerText = currentChannel;
-            pttBtn.innerText = "Connecting...";
-
-            await connectToFirebaseTower();
-
         } catch (err) {
             alert("Microphone Error! Ensure you are on HTTPS and gave permission.");
             logMessage(`Mic Error: ${err.message}`);
+            return; // Stop execution if mic permission fails
+        }
+
+        // 2. Switch Screens
+        setupScreen.style.display = 'none';
+        dashboard.style.display = 'block';
+        document.getElementById('ui-channel').innerText = currentChannel;
+        pttBtn.innerText = "Connecting...";
+
+        // 3. Firebase Connection Block
+        try {
+            await connectToFirebaseTower();
+        } catch (err) {
+            alert("Database Error! Check your Firebase Realtime Database Security Rules.");
+            logMessage(`Firebase Error: ${err.message}`);
         }
     };
 
