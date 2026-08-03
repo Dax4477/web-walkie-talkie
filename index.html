@@ -3,15 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Radio Tower Walkie-Talkie</title>
+    <title>Radio Tower Walkie-Talkie (E2EE)</title>
     
+    <!-- Firebase v8 -->
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 
     <style>
         body { font-family: sans-serif; text-align: center; padding: 20px; background-color: #f4f4f9; }
         .container { max-width: 400px; margin: auto; padding: 20px; background: white; border: 1px solid #ccc; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
-        select, input, button { padding: 10px; margin: 10px 0; width: 90%; font-size: 16px; border-radius: 5px; border: 1px solid #ccc;}
+        select, input, button { padding: 10px; margin: 10px 0; width: 90%; font-size: 16px; border-radius: 5px; border: 1px solid #ccc; box-sizing: border-box;}
         
         #dashboard { display: none; } 
         
@@ -21,7 +22,7 @@
         #ptt-btn {
             background-color: #555; color: white; height: 120px; border-radius: 60px;
             border: none; cursor: pointer; user-select: none; font-size: 18px; font-weight: bold;
-            transition: 0.2s; width: 90%;
+            transition: 0.2s; width: 90%; -webkit-tap-highlight-color: transparent;
         }
         #ptt-btn:active:not(:disabled) { background-color: #28a745; transform: scale(0.95); } 
         #ptt-btn:disabled { background-color: #dc3545; cursor: not-allowed; opacity: 0.7; } 
@@ -29,13 +30,15 @@
         #leave-btn { background-color: #6c757d; color: white; border: none; cursor: pointer; margin-top: 15px;}
         #leave-btn:hover { background-color: #5a6268; }
         
-        .divider { font-size: 14px; color: #777; margin: 5px 0; }
+        .divider { font-size: 14px; color: #777; margin: 15px 0; }
+        
+        #debug-log { font-size: 11px; color: #666; margin-top: 20px; text-align: left; max-height: 100px; overflow-y: auto; background: #eee; padding: 5px; border-radius: 4px;}
     </style>
 </head>
 <body>
 
 <div class="container" id="setup-screen">
-    <h2>Connect to Radio Tower</h2>
+    <h2>E2EE Radio Tower</h2>
     <p>Select a pre-fixed channel or create your own.</p>
     
     <select id="channel-select">
@@ -49,7 +52,7 @@
 
     <input type="text" id="channel-custom" placeholder="Type custom channel name...">
     
-    <button id="join-btn" style="background-color: #007bff; color: white; border: none;">Connect Radio</button>
+    <button id="join-btn" style="background-color: #007bff; color: white; border: none; font-weight: bold;">Connect Radio</button>
 </div>
 
 <div class="container" id="dashboard">
@@ -66,11 +69,21 @@
     <button id="leave-btn">Leave Channel</button>
     
     <div id="audio-container"></div>
+    
+    <div id="debug-log">System initialized...</div>
 </div>
 
 <script>
+    // Simple UI Logger
+    function logMessage(msg) {
+        console.log(msg);
+        const logDiv = document.getElementById('debug-log');
+        logDiv.innerHTML += `<br>[${new Date().toLocaleTimeString()}] ${msg}`;
+        logDiv.scrollTop = logDiv.scrollHeight;
+    }
+
     // ==========================================
-    // 1. FIREBASE CONFIG
+    // 1. FIREBASE CONFIGURATION
     // ==========================================
     const firebaseConfig = {
         apiKey: "AIzaSyAN2KhtSuruzJVAMbtM6AYF34TfNAzqtrk",
@@ -82,26 +95,27 @@
         appId: "1:540679406004:web:20d5ace367b173758af2e1"
     };
     
-    firebase.initializeApp(firebaseConfig);
+    if (!firebase.apps.length) {
+        firebase.initializeApp(firebaseConfig);
+    }
     const database = firebase.database();
 
     // ==========================================
-    // 2. WEBRTC GLOBAL VARIABLES & ROBUST ICE CONFIG
+    // 2. WEBRTC GLOBAL VARIABLES
     // ==========================================
     const myId = Math.floor(100000 + Math.random() * 900000).toString(); 
     
-    // Upgraded for International Reach: Added Cloudflare STUN & Candidate Pooling
+    // WebRTC Configuration - Critical for International calls
     const rtcConfig = {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun.cloudflare.com:3478' }, // Cloudflare fallback
-            // TURN Servers are strictly required for Strict NATs (International mobile carriers)
+            { urls: 'stun:stun.cloudflare.com:3478' },
             { urls: 'turn:global.relay.metered.ca:80', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' },
             { urls: 'turn:global.relay.metered.ca:443', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' },
             { urls: 'turn:global.relay.metered.ca:443?transport=tcp', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' }
         ],
-        iceCandidatePoolSize: 10 // Speeds up cross-border connection negotiation
+        iceCandidatePoolSize: 10
     };
 
     let localStream;
@@ -124,11 +138,15 @@
         const customVal = document.getElementById('channel-custom').value.trim();
         
         currentChannel = customVal ? customVal.replace(/[^a-zA-Z0-9-_]/g, '') : selectVal;
-        if(!currentChannel) return alert("Please select or type a valid channel name!");
+        
+        if(!currentChannel) {
+            alert("Please select or type a valid channel name!");
+            return;
+        }
 
         try {
+            logMessage("Requesting microphone access...");
             if (!localStream) {
-                // Added audio constraints to prevent international latency echo
                 localStream = await navigator.mediaDevices.getUserMedia({ 
                     audio: {
                         echoCancellation: true,
@@ -138,26 +156,27 @@
                 });
             }
             localStream.getAudioTracks()[0].enabled = false; 
+            logMessage("Microphone acquired & muted.");
             
             setupScreen.style.display = 'none';
             dashboard.style.display = 'block';
             document.getElementById('ui-channel').innerText = currentChannel;
-            pttBtn.innerText = "Hold to Talk";
-            pttBtn.disabled = false;
+            pttBtn.innerText = "Connecting...";
 
-            connectToFirebaseTower();
+            await connectToFirebaseTower();
 
         } catch (err) {
-            alert("Microphone required! Please check your browser permissions.");
-            console.error(err);
+            alert("Microphone Error! Ensure you are on HTTPS and gave permission.");
+            logMessage(`Mic Error: ${err.message}`);
         }
     };
 
     // ==========================================
-    // 4. LEAVING A CHANNEL CLEANUP
+    // 4. LEAVING A CHANNEL
     // ==========================================
     document.getElementById('leave-btn').onclick = () => {
         if (!currentChannel) return;
+        logMessage("Leaving channel...");
 
         if (pttBtn.innerText === "Transmitting...") {
             localStream.getAudioTracks()[0].enabled = false;
@@ -186,36 +205,42 @@
     };
 
     // ==========================================
-    // 5. FIREBASE SIGNALING TOWER
+    // 5. FIREBASE SIGNALING
     // ==========================================
     async function connectToFirebaseTower() {
+        logMessage(`Connecting to signaling server as ID: ${myId}`);
         channelRef = database.ref(`channels/${currentChannel}`);
         myUserRef = channelRef.child(`users/${myId}`);
         talkingRef = channelRef.child('currently_talking');
 
         await myUserRef.set(null);
-        myUserRef.child('presence').set(true);
+        await myUserRef.child('presence').set(true);
         myUserRef.onDisconnect().remove();
 
         channelRef.child('users').on('value', (snapshot) => {
             uiCount.innerText = snapshot.numChildren();
         });
 
+        // Mesh Network: Connect to existing users
         channelRef.child('users').on('child_added', (snapshot) => {
             const partnerId = snapshot.key;
             if (partnerId !== myId && myId > partnerId) {
+                logMessage(`Initiating call to ${partnerId}`);
                 initiateCall(partnerId);
             }
         });
 
         channelRef.child('users').on('child_removed', (snapshot) => {
             const partnerId = snapshot.key;
+            logMessage(`User ${partnerId} disconnected.`);
             removePeer(partnerId);
         });
         
+        // Handle incoming calls
         myUserRef.child('offers').on('child_added', async (snapshot) => {
             const partnerId = snapshot.key;
             const offer = snapshot.val();
+            logMessage(`Received offer from ${partnerId}`);
             
             const pc = createPeerConnection(partnerId);
             await pc.setRemoteDescription(new RTCSessionDescription(offer));
@@ -227,28 +252,30 @@
                 type: answer.type,
                 sdp: answer.sdp
             });
+            logMessage(`Sent answer to ${partnerId}`);
         });
 
+        // Handle answered calls
         myUserRef.child('answers').on('child_added', async (snapshot) => {
             const partnerId = snapshot.key;
             const answer = snapshot.val();
+            logMessage(`Received answer from ${partnerId}`);
             const pc = peers[partnerId];
             if (pc) {
                 await pc.setRemoteDescription(new RTCSessionDescription(answer));
             }
         });
 
+        // Handle ICE network candidates
         myUserRef.child('candidates').on('child_added', (snapshot) => {
             const data = snapshot.val();
             const pc = peers[data.sender];
             if (pc && data.candidate) {
-                pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(console.error);
+                pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(err => console.error("ICE Error:", err));
             }
         });
 
-        // ==========================================
-        // 6. PUSH-TO-TALK LOCK
-        // ==========================================
+        // Push-to-Talk Logic
         talkingRef.on('value', (snapshot) => {
             const talkerId = snapshot.val();
             
@@ -277,17 +304,19 @@
             });
         };
 
+        // Attach PTT events
         pttBtn.addEventListener('mousedown', startTalking);
         pttBtn.addEventListener('mouseup', stopTalking);
         pttBtn.addEventListener('mouseleave', stopTalking);
-        pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startTalking(); });
-        pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopTalking(); });
+        pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startTalking(); }, {passive: false});
+        pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopTalking(); }, {passive: false});
     }
 
     // ==========================================
-    // 7. WEBRTC CONNECTION BUILDER & NETWORK MONITORING
+    // 6. WEBRTC CONNECTION BUILDER
     // ==========================================
     function createPeerConnection(partnerId) {
+        logMessage(`Creating WebRTC connection for ${partnerId}`);
         const pc = new RTCPeerConnection(rtcConfig);
         peers[partnerId] = pc;
 
@@ -302,15 +331,15 @@
             }
         };
 
-        // Monitor connection state (crucial for international routing stability)
         pc.oniceconnectionstatechange = () => {
+            logMessage(`ICE State (${partnerId}): ${pc.iceConnectionState}`);
             if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-                console.warn(`International connection dropped with ${partnerId}.`);
                 removePeer(partnerId);
             }
         };
 
         pc.ontrack = (event) => {
+            logMessage(`Receiving audio stream from ${partnerId}`);
             if (!document.getElementById(`audio-${partnerId}`)) {
                 const audioObj = document.createElement('audio');
                 audioObj.id = `audio-${partnerId}`;
@@ -319,7 +348,7 @@
                 audioObj.playsInline = true; 
                 document.getElementById('audio-container').appendChild(audioObj);
                 
-                audioObj.play().catch(e => console.error("Audio block:", e));
+                audioObj.play().catch(e => logMessage(`Audio Playback Blocked: ${e.message}`));
             }
         };
 
@@ -335,6 +364,7 @@
             type: offer.type,
             sdp: offer.sdp
         });
+        logMessage(`Sent offer to ${partnerId}`);
     }
 
     function removePeer(partnerId) {
