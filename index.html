@@ -2,87 +2,157 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>E2EE Secure Calling</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Secure Comms Tower</title>
+    
+    <!-- Tailwind CSS for Modern UI -->
+    <script src="https://cdn.tailwindcss.com"></script>
     
     <!-- Firebase v8 -->
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
 
     <style>
-        body { font-family: sans-serif; text-align: center; padding: 20px; background-color: #f4f4f9; }
-        .container { max-width: 400px; margin: auto; padding: 20px; background: white; border: 1px solid #ccc; border-radius: 10px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
-        select, input, button { padding: 10px; margin: 10px 0; width: 90%; font-size: 16px; border-radius: 5px; border: 1px solid #ccc; box-sizing: border-box;}
+        /* Prevent pull-to-refresh and text selection on mobile for app-like feel */
+        body { overscroll-behavior-y: contain; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+        /* Hide scrollbar for the audio container */
+        #audio-container::-webkit-scrollbar { display: none; }
         
-        #dashboard { display: none; } 
-        
-        .status-box { background: #e9ecef; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
-        .status-box p { margin: 5px 0; font-weight: bold; }
-
-        /* Updated for Calling: Mute Toggle Button */
-        #mute-btn {
-            background-color: #28a745; color: white; height: 60px; border-radius: 30px;
-            border: none; cursor: pointer; user-select: none; font-size: 18px; font-weight: bold;
-            transition: 0.2s; width: 90%; margin-top: 10px;
+        /* Custom Pulse Animation */
+        @keyframes pulse-ring {
+            0% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+            100% { transform: scale(0.8); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
         }
-        #mute-btn.muted { background-color: #dc3545; }
-
-        #leave-btn { background-color: #6c757d; color: white; border: none; cursor: pointer; margin-top: 15px; height: 50px; border-radius: 25px; font-size: 16px;}
-        #leave-btn:hover { background-color: #5a6268; }
-        
-        .divider { font-size: 14px; color: #777; margin: 15px 0; }
-        
-        #debug-log { font-size: 11px; color: #666; margin-top: 20px; text-align: left; max-height: 100px; overflow-y: auto; background: #eee; padding: 5px; border-radius: 4px;}
+        .animate-pulse-ring { animation: pulse-ring 2s infinite; }
     </style>
 </head>
-<body>
+<body class="flex items-center justify-center min-h-screen p-4 antialiased bg-slate-50 text-slate-800">
 
-<div class="container" id="setup-screen">
-    <h2>Secure Web Call</h2>
-    <p>Join a room to start calling.</p>
+<!-- SETUP SCREEN -->
+<div id="setup-screen" class="w-full max-w-md p-8 transition-all duration-300 bg-white border border-slate-200 shadow-xl rounded-3xl">
+    <div class="mb-8 text-center">
+        <div class="inline-flex items-center justify-center w-16 h-16 mb-4 text-3xl shadow-inner bg-slate-100 rounded-2xl">
+            📡
+        </div>
+        <h2 class="text-2xl font-bold tracking-tight text-slate-900">Secure Comms</h2>
+        <p class="text-sm text-slate-500">End-to-end encrypted network</p>
+    </div>
     
-    <select id="channel-select">
-        <option value="Room-1">Room 1 (Lobby)</option>
-        <option value="Room-2">Room 2 (Private)</option>
-    </select>
-
-    <div class="divider">─ OR CREATE CUSTOM ─</div>
-
-    <input type="text" id="channel-custom" placeholder="Type custom room name...">
-    
-    <button id="join-btn" style="background-color: #007bff; color: white; border: none; font-weight: bold;">Join Call</button>
-</div>
-
-<div class="container" id="dashboard">
-    <h2>Live Call</h2>
-    
-    <div class="status-box">
-        <p>Room: <span id="ui-channel" style="color: #007bff;">...</span></p>
-        <p>People in Call: <span id="ui-count" style="color: #28a745;">1</span></p>
+    <!-- Custom Segmented Control for Mode -->
+    <div class="flex p-1 mb-6 space-x-1 bg-slate-100 rounded-xl">
+        <label class="relative flex items-center justify-center flex-1 py-2 text-sm font-medium transition-all rounded-lg cursor-pointer select-none text-slate-600 hover:text-slate-900" id="label-walkie">
+            <input type="radio" name="comm-mode" value="walkie" class="absolute w-0 h-0 opacity-0" checked onchange="updateModeUI()"> 
+            📻 Walkie-Talkie
+        </label>
+        <label class="relative flex items-center justify-center flex-1 py-2 text-sm font-medium transition-all rounded-lg cursor-pointer select-none text-slate-600 hover:text-slate-900" id="label-call">
+            <input type="radio" name="comm-mode" value="call" class="absolute w-0 h-0 opacity-0" onchange="updateModeUI()"> 
+            📞 Standard Call
+        </label>
     </div>
 
-    <!-- Replaced PTT with Mute Button -->
-    <button id="mute-btn">Mute Microphone</button>
+    <div class="space-y-4">
+        <div>
+            <label class="block mb-1 text-xs font-semibold tracking-wide uppercase text-slate-500">Select Room</label>
+            <select id="channel-select" class="w-full px-4 py-3 border appearance-none bg-slate-50 border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                <option value="General-Lobby">Global Lobby</option>
+                <option value="Alpha-Squad">Alpha Squad</option>
+                <option value="Private-Room">Private Room</option>
+            </select>
+        </div>
+
+        <div class="relative flex items-center py-2">
+            <div class="flex-grow border-t border-slate-200"></div>
+            <span class="flex-shrink-0 mx-4 text-xs text-slate-400">OR</span>
+            <div class="flex-grow border-t border-slate-200"></div>
+        </div>
+
+        <div>
+            <input type="text" id="channel-custom" placeholder="Custom room name..." class="w-full px-4 py-3 border bg-slate-50 border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+        </div>
+        
+        <button id="join-btn" class="w-full py-4 mt-4 font-bold text-white transition-transform transform bg-blue-600 shadow-lg rounded-xl hover:bg-blue-700 active:scale-95 shadow-blue-500/30">
+            Establish Connection
+        </button>
+    </div>
+</div>
+
+<!-- DASHBOARD SCREEN -->
+<div id="dashboard" class="hidden w-full max-w-md p-6 bg-white border border-slate-200 shadow-2xl rounded-3xl">
     
-    <button id="leave-btn">End Call</button>
+    <!-- Status Header -->
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h2 id="dashboard-title" class="text-xl font-bold text-slate-900">Radio Tower</h2>
+            <div class="flex items-center space-x-2 text-sm font-medium text-slate-500">
+                <span id="ui-mode-badge">📻 Walkie-Talkie</span>
+                <span>•</span>
+                <span id="ui-channel" class="text-blue-600">Room</span>
+            </div>
+        </div>
+        <div class="flex items-center px-3 py-1 space-x-2 border rounded-full bg-slate-50 border-slate-200">
+            <div class="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse-ring"></div>
+            <span id="ui-count" class="text-sm font-bold text-slate-700">1</span>
+        </div>
+    </div>
+
+    <!-- Walkie Talkie UI -->
+    <div id="walkie-controls" class="hidden space-y-4">
+        <div class="px-4 py-3 text-center border rounded-xl bg-slate-50 border-slate-200">
+            <p id="ui-who-talking" class="text-sm font-medium text-slate-600">Channel is open.</p>
+        </div>
+        <button id="ptt-btn" disabled class="w-full h-40 text-2xl font-bold text-white transition-all duration-200 shadow-lg rounded-3xl bg-slate-700 active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed touch-none">
+            Waiting for Mic...
+        </button>
+    </div>
+
+    <!-- Standard Call UI -->
+    <div id="call-controls" class="hidden space-y-4">
+        <button id="mute-btn" class="w-full h-24 text-xl font-bold text-white transition-all duration-200 shadow-lg rounded-2xl bg-emerald-500 active:scale-95 shadow-emerald-500/30 touch-none">
+            Mute Microphone
+        </button>
+    </div>
     
-    <div id="audio-container"></div>
+    <!-- Footer Controls -->
+    <div class="mt-6">
+        <button id="leave-btn" class="w-full py-3 font-semibold text-slate-600 transition-colors bg-slate-100 rounded-xl hover:bg-slate-200 hover:text-slate-900">
+            Disconnect
+        </button>
+    </div>
     
-    <div id="debug-log">System initialized...</div>
+    <!-- Media & Terminal -->
+    <div id="audio-container" class="flex flex-col gap-2 mt-4 max-h-32 overflow-y-auto"></div>
+    
+    <div class="p-3 mt-6 overflow-y-auto text-xs font-mono text-green-400 bg-slate-900 rounded-xl max-h-28 shadow-inner" id="debug-log">
+        > System initialized...
+    </div>
 </div>
 
 <script>
-    // Simple UI Logger
+    // --- UI Logic (Mode Toggle Styling) ---
+    function updateModeUI() {
+        const mode = document.querySelector('input[name="comm-mode"]:checked').value;
+        const lblWalkie = document.getElementById('label-walkie');
+        const lblCall = document.getElementById('label-call');
+        
+        if (mode === 'walkie') {
+            lblWalkie.classList.add('bg-white', 'shadow-sm', 'text-slate-900');
+            lblCall.classList.remove('bg-white', 'shadow-sm', 'text-slate-900');
+        } else {
+            lblCall.classList.add('bg-white', 'shadow-sm', 'text-slate-900');
+            lblWalkie.classList.remove('bg-white', 'shadow-sm', 'text-slate-900');
+        }
+    }
+    updateModeUI(); // Init
+
+    // --- Core Logic ---
     function logMessage(msg) {
         console.log(msg);
         const logDiv = document.getElementById('debug-log');
-        logDiv.innerHTML += `<br>[${new Date().toLocaleTimeString()}] ${msg}`;
+        logDiv.innerHTML += `<br>> ${msg}`;
         logDiv.scrollTop = logDiv.scrollHeight;
     }
 
-    // ==========================================
-    // 1. FIREBASE CONFIGURATION
-    // ==========================================
     const firebaseConfig = {
         apiKey: "AIzaSyAN2KhtSuruzJVAMbtM6AYF34TfNAzqtrk",
         authDomain: "web-walkie-talkie.firebaseapp.com",
@@ -93,118 +163,262 @@
         appId: "1:540679406004:web:20d5ace367b173758af2e1"
     };
     
-    if (!firebase.apps.length) {
-        firebase.initializeApp(firebaseConfig);
-    }
+    if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
     const database = firebase.database();
 
-    // ==========================================
-    // 2. WEBRTC GLOBAL VARIABLES
-    // ==========================================
     const myId = Math.floor(100000 + Math.random() * 900000).toString(); 
-    
     const rtcConfig = {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
             { urls: 'stun:stun.cloudflare.com:3478' },
             { urls: 'turn:global.relay.metered.ca:80', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' },
-            { urls: 'turn:global.relay.metered.ca:443', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' },
-            { urls: 'turn:global.relay.metered.ca:443?transport=tcp', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' }
+            { urls: 'turn:global.relay.metered.ca:443', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' }
         ],
         iceCandidatePoolSize: 10
     };
 
     let localStream;
-    let currentChannel = "";
+    let currentChannel = "", actualDatabasePath = "", selectedMode = "walkie", isMuted = false;
     let peers = {}; 
-    let isMuted = false;
-    
-    let channelRef, myUserRef;
+    let channelRef, myUserRef, talkingRef;
 
     const setupScreen = document.getElementById('setup-screen');
     const dashboard = document.getElementById('dashboard');
-    const muteBtn = document.getElementById('mute-btn');
     const uiCount = document.getElementById('ui-count');
+    const walkieControls = document.getElementById('walkie-controls');
+    const callControls = document.getElementById('call-controls');
+    const pttBtn = document.getElementById('ptt-btn');
+    const muteBtn = document.getElementById('mute-btn');
+    const uiWhoTalking = document.getElementById('ui-who-talking');
 
-    // ==========================================
-    // 3. JOINING THE CALL
-    // ==========================================
     document.getElementById('join-btn').onclick = async () => {
         const selectVal = document.getElementById('channel-select').value;
         const customVal = document.getElementById('channel-custom').value.trim();
         
         currentChannel = customVal ? customVal.replace(/[^a-zA-Z0-9-_]/g, '') : selectVal;
-        
-        if(!currentChannel) {
-            alert("Please select or type a valid room name!");
-            return;
-        }
+        if(!currentChannel) return alert("Please select or type a valid room name!");
+
+        selectedMode = document.querySelector('input[name="comm-mode"]:checked').value;
+        actualDatabasePath = `${selectedMode}_${currentChannel}`; 
 
         try {
-            logMessage("Requesting microphone access...");
+            logMessage("Acquiring microphone...");
             if (!localStream) {
                 localStream = await navigator.mediaDevices.getUserMedia({ 
-                    audio: {
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true
-                    } 
+                    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } 
                 });
             }
-            // CHANGED FOR CALLING: Mic is active immediately upon joining
-            localStream.getAudioTracks()[0].enabled = true; 
-            isMuted = false;
-            muteBtn.innerText = "Mute Microphone";
-            muteBtn.classList.remove('muted');
-            logMessage("Microphone active.");
+
+            if (selectedMode === 'walkie') {
+                localStream.getAudioTracks()[0].enabled = false; 
+                logMessage("Mic acquired (Muted for Walkie).");
+            } else {
+                localStream.getAudioTracks()[0].enabled = true; 
+                isMuted = false;
+                muteBtn.innerText = "Mute Microphone";
+                muteBtn.className = "w-full h-24 text-xl font-bold text-white transition-all duration-200 shadow-lg rounded-2xl bg-emerald-500 active:scale-95 shadow-emerald-500/30 touch-none";
+                logMessage("Mic acquired (Active for Call).");
+            }
         } catch (err) {
-            alert("Microphone Error! Ensure you are on HTTPS and gave permission.");
+            alert("Microphone Error! Ensure you gave permission.");
             logMessage(`Mic Error: ${err.message}`);
             return;
         }
 
-        setupScreen.style.display = 'none';
-        dashboard.style.display = 'block';
+        setupScreen.classList.add('hidden');
+        dashboard.classList.remove('hidden');
         document.getElementById('ui-channel').innerText = currentChannel;
+        
+        if (selectedMode === 'walkie') {
+            document.getElementById('ui-mode-badge').innerText = "📻 Walkie";
+            document.getElementById('dashboard-title').innerText = "Radio Tower";
+            walkieControls.classList.remove('hidden');
+            callControls.classList.add('hidden');
+            pttBtn.innerText = "Connecting...";
+        } else {
+            document.getElementById('ui-mode-badge').innerText = "📞 Call";
+            document.getElementById('dashboard-title').innerText = "Live Room";
+            callControls.classList.remove('hidden');
+            walkieControls.classList.add('hidden');
+        }
 
         try {
             await connectToFirebaseTower();
         } catch (err) {
-            alert("Database Error! Check your Firebase Security Rules.");
-            logMessage(`Firebase Error: ${err.message}`);
+            alert("Database Error! Check Firebase Rules.");
+            logMessage(`DB Error: ${err.message}`);
         }
     };
 
-    // ==========================================
-    // 4. MUTE TOGGLE LOGIC
-    // ==========================================
-    muteBtn.onclick = () => {
-        if (!localStream) return;
+    async function connectToFirebaseTower() {
+        logMessage(`Joined ${actualDatabasePath}`);
+        channelRef = database.ref(`channels/${actualDatabasePath}`);
+        myUserRef = channelRef.child(`users/${myId}`);
+
+        await myUserRef.set(null);
+        await myUserRef.child('presence').set(true);
+        myUserRef.onDisconnect().remove();
+
+        channelRef.child('users').on('value', (snapshot) => {
+            uiCount.innerText = snapshot.numChildren();
+        });
+
+        channelRef.child('users').on('child_added', (snapshot) => {
+            const partnerId = snapshot.key;
+            if (partnerId !== myId && myId > partnerId) initiateCall(partnerId);
+        });
+
+        channelRef.child('users').on('child_removed', (snapshot) => {
+            removePeer(snapshot.key);
+        });
         
+        myUserRef.child('offers').on('child_added', async (snapshot) => {
+            const partnerId = snapshot.key;
+            const pc = createPeerConnection(partnerId);
+            await pc.setRemoteDescription(new RTCSessionDescription(snapshot.val()));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            database.ref(`channels/${actualDatabasePath}/users/${partnerId}/answers/${myId}`).set({ type: answer.type, sdp: answer.sdp });
+        });
+
+        myUserRef.child('answers').on('child_added', async (snapshot) => {
+            const pc = peers[snapshot.key];
+            if (pc) await pc.setRemoteDescription(new RTCSessionDescription(snapshot.val()));
+        });
+
+        myUserRef.child('candidates').on('child_added', (snapshot) => {
+            const data = snapshot.val();
+            const pc = peers[data.sender];
+            if (pc && data.candidate) pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(e => console.error(e));
+        });
+
+        if (selectedMode === 'walkie') setupWalkieTalkieLogic();
+    }
+
+    function setupWalkieTalkieLogic() {
+        talkingRef = channelRef.child('currently_talking');
+
+        talkingRef.on('value', (snapshot) => {
+            const talkerId = snapshot.val();
+            if (talkerId && talkerId !== myId) {
+                pttBtn.disabled = true;
+                pttBtn.innerText = "Channel Busy";
+                pttBtn.className = "w-full h-40 text-2xl font-bold text-white transition-all duration-200 shadow-lg rounded-3xl bg-rose-500 shadow-rose-500/30 opacity-80 touch-none cursor-not-allowed";
+                uiWhoTalking.innerText = `User ${talkerId.substring(0,4)}... is transmitting`;
+                uiWhoTalking.className = "text-sm font-bold text-rose-600";
+            } else {
+                pttBtn.disabled = false;
+                pttBtn.innerText = talkerId === myId ? "Transmitting..." : "Hold to Talk";
+                pttBtn.className = talkerId === myId 
+                    ? "w-full h-40 text-2xl font-bold text-white transition-all duration-200 shadow-lg rounded-3xl bg-emerald-500 active:scale-95 shadow-emerald-500/30 touch-none"
+                    : "w-full h-40 text-2xl font-bold text-white transition-all duration-200 shadow-lg rounded-3xl bg-slate-700 active:scale-95 touch-none hover:bg-slate-800";
+                uiWhoTalking.innerText = talkerId === myId ? "You are live." : "Channel is open.";
+                uiWhoTalking.className = talkerId === myId ? "text-sm font-bold text-emerald-600" : "text-sm font-medium text-slate-600";
+            }
+        });
+
+        const startTalking = () => {
+            if(pttBtn.disabled) return;
+            localStream.getAudioTracks()[0].enabled = true; 
+            talkingRef.set(myId); 
+        };
+
+        const stopTalking = () => {
+            if(!localStream) return;
+            localStream.getAudioTracks()[0].enabled = false; 
+            talkingRef.once('value').then(snap => {
+                if(snap.val() === myId) talkingRef.set(null); 
+            });
+        };
+
+        const clone = pttBtn.cloneNode(true);
+        pttBtn.parentNode.replaceChild(clone, pttBtn);
+        const newPttBtn = document.getElementById('ptt-btn');
+
+        newPttBtn.addEventListener('mousedown', startTalking);
+        newPttBtn.addEventListener('mouseup', stopTalking);
+        newPttBtn.addEventListener('mouseleave', stopTalking);
+        newPttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startTalking(); }, {passive: false});
+        newPttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopTalking(); }, {passive: false});
+    }
+
+    muteBtn.onclick = () => {
+        if (!localStream || selectedMode !== 'call') return;
         isMuted = !isMuted;
-        localStream.getAudioTracks()[0].enabled = !isMuted; // Toggle the audio track
+        localStream.getAudioTracks()[0].enabled = !isMuted; 
         
         if (isMuted) {
             muteBtn.innerText = "Unmute Microphone";
-            muteBtn.classList.add('muted');
-            logMessage("Microphone muted.");
+            muteBtn.className = "w-full h-24 text-xl font-bold text-white transition-all duration-200 shadow-lg rounded-2xl bg-rose-500 active:scale-95 shadow-rose-500/30 touch-none";
         } else {
             muteBtn.innerText = "Mute Microphone";
-            muteBtn.classList.remove('muted');
-            logMessage("Microphone unmuted.");
+            muteBtn.className = "w-full h-24 text-xl font-bold text-white transition-all duration-200 shadow-lg rounded-2xl bg-emerald-500 active:scale-95 shadow-emerald-500/30 touch-none";
         }
     };
 
-    // ==========================================
-    // 5. LEAVING THE CALL
-    // ==========================================
+    function createPeerConnection(partnerId) {
+        const pc = new RTCPeerConnection(rtcConfig);
+        peers[partnerId] = pc;
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                database.ref(`channels/${actualDatabasePath}/users/${partnerId}/candidates`).push({
+                    sender: myId, candidate: event.candidate.toJSON()
+                });
+            }
+        };
+
+        pc.oniceconnectionstatechange = () => {
+            logMessage(`Network [${partnerId.substring(0,4)}]: ${pc.iceConnectionState}`);
+            if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') removePeer(partnerId);
+        };
+
+        pc.ontrack = (event) => {
+            if (!document.getElementById(`audio-${partnerId}`)) {
+                const audioObj = document.createElement('audio');
+                audioObj.id = `audio-${partnerId}`;
+                audioObj.srcObject = event.streams[0];
+                audioObj.autoplay = true;
+                audioObj.playsInline = true;
+                audioObj.controls = true; 
+                audioObj.className = "w-full h-10 mt-1 opacity-50 hover:opacity-100 transition-opacity rounded-full bg-slate-100";
+                
+                document.getElementById('audio-container').appendChild(audioObj);
+                
+                audioObj.play().then(() => {
+                    logMessage(`Audio playing from ${partnerId.substring(0,4)}`);
+                }).catch(e => {
+                    logMessage(`WARNING: Browser blocked audio. Press play.`);
+                });
+            }
+        };
+        return pc;
+    }
+
+    async function initiateCall(partnerId) {
+        const pc = createPeerConnection(partnerId);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        database.ref(`channels/${actualDatabasePath}/users/${partnerId}/offers/${myId}`).set({ type: offer.type, sdp: offer.sdp });
+    }
+
+    function removePeer(partnerId) {
+        if (peers[partnerId]) {
+            peers[partnerId].close();
+            delete peers[partnerId];
+        }
+        const audioObj = document.getElementById(`audio-${partnerId}`);
+        if (audioObj) audioObj.remove();
+    }
+
     document.getElementById('leave-btn').onclick = () => {
         if (!currentChannel) return;
-        logMessage("Leaving call...");
+        logMessage("Disconnecting...");
 
-        if (localStream) {
+        if (selectedMode === 'walkie' && localStream) {
             localStream.getAudioTracks()[0].enabled = false;
+            if(talkingRef) talkingRef.set(null);
         }
 
         Object.values(peers).forEach(pc => pc.close());
@@ -216,144 +430,16 @@
             myUserRef.child('candidates').off();
             myUserRef.remove();
         }
-        if (channelRef) {
-            channelRef.child('users').off();
-        }
+        if (channelRef) channelRef.child('users').off();
+        if (talkingRef) talkingRef.off();
 
         document.getElementById('audio-container').innerHTML = "";
         currentChannel = "";
-        dashboard.style.display = 'none';
-        setupScreen.style.display = 'block';
+        actualDatabasePath = "";
+        dashboard.classList.add('hidden');
+        setupScreen.classList.remove('hidden');
         document.getElementById('channel-custom').value = ""; 
     };
-
-    // ==========================================
-    // 6. FIREBASE SIGNALING
-    // ==========================================
-    async function connectToFirebaseTower() {
-        logMessage(`Connecting to room as ID: ${myId}`);
-        channelRef = database.ref(`channels/${currentChannel}`);
-        myUserRef = channelRef.child(`users/${myId}`);
-
-        await myUserRef.set(null);
-        await myUserRef.child('presence').set(true);
-        myUserRef.onDisconnect().remove();
-
-        channelRef.child('users').on('value', (snapshot) => {
-            uiCount.innerText = snapshot.numChildren();
-        });
-
-        // Connect to existing users in the room
-        channelRef.child('users').on('child_added', (snapshot) => {
-            const partnerId = snapshot.key;
-            if (partnerId !== myId && myId > partnerId) {
-                logMessage(`Initiating call to ${partnerId}`);
-                initiateCall(partnerId);
-            }
-        });
-
-        channelRef.child('users').on('child_removed', (snapshot) => {
-            const partnerId = snapshot.key;
-            logMessage(`User ${partnerId} left the call.`);
-            removePeer(partnerId);
-        });
-        
-        myUserRef.child('offers').on('child_added', async (snapshot) => {
-            const partnerId = snapshot.key;
-            const offer = snapshot.val();
-            logMessage(`Received offer from ${partnerId}`);
-            
-            const pc = createPeerConnection(partnerId);
-            await pc.setRemoteDescription(new RTCSessionDescription(offer));
-            
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            
-            database.ref(`channels/${currentChannel}/users/${partnerId}/answers/${myId}`).set({
-                type: answer.type,
-                sdp: answer.sdp
-            });
-        });
-
-        myUserRef.child('answers').on('child_added', async (snapshot) => {
-            const partnerId = snapshot.key;
-            const answer = snapshot.val();
-            logMessage(`Call answered by ${partnerId}`);
-            const pc = peers[partnerId];
-            if (pc) {
-                await pc.setRemoteDescription(new RTCSessionDescription(answer));
-            }
-        });
-
-        myUserRef.child('candidates').on('child_added', (snapshot) => {
-            const data = snapshot.val();
-            const pc = peers[data.sender];
-            if (pc && data.candidate) {
-                pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(err => console.error("ICE Error:", err));
-            }
-        });
-    }
-
-    // ==========================================
-    // 7. WEBRTC CONNECTION BUILDER
-    // ==========================================
-    function createPeerConnection(partnerId) {
-        const pc = new RTCPeerConnection(rtcConfig);
-        peers[partnerId] = pc;
-
-        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-
-        pc.onicecandidate = (event) => {
-            if (event.candidate) {
-                database.ref(`channels/${currentChannel}/users/${partnerId}/candidates`).push({
-                    sender: myId,
-                    candidate: event.candidate.toJSON()
-                });
-            }
-        };
-
-        pc.oniceconnectionstatechange = () => {
-            if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-                removePeer(partnerId);
-            }
-        };
-
-        pc.ontrack = (event) => {
-            logMessage(`Audio stream connected with ${partnerId}`);
-            if (!document.getElementById(`audio-${partnerId}`)) {
-                const audioObj = document.createElement('audio');
-                audioObj.id = `audio-${partnerId}`;
-                audioObj.srcObject = event.streams[0];
-                audioObj.autoplay = true;
-                audioObj.playsInline = true; 
-                document.getElementById('audio-container').appendChild(audioObj);
-                
-                audioObj.play().catch(e => logMessage(`Audio Playback Blocked: ${e.message}`));
-            }
-        };
-
-        return pc;
-    }
-
-    async function initiateCall(partnerId) {
-        const pc = createPeerConnection(partnerId);
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        
-        database.ref(`channels/${currentChannel}/users/${partnerId}/offers/${myId}`).set({
-            type: offer.type,
-            sdp: offer.sdp
-        });
-    }
-
-    function removePeer(partnerId) {
-        if (peers[partnerId]) {
-            peers[partnerId].close();
-            delete peers[partnerId];
-        }
-        const audioObj = document.getElementById(`audio-${partnerId}`);
-        if (audioObj) audioObj.remove();
-    }
 </script>
 
 </body>
