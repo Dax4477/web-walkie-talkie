@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Radio Tower Walkie-Talkie (E2EE)</title>
+    <title>E2EE Secure Calling</title>
     
     <!-- Firebase v8 -->
     <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
@@ -16,18 +16,18 @@
         
         #dashboard { display: none; } 
         
-        .status-box { background: #e9ecef; padding: 10px; border-radius: 5px; margin-bottom: 20px; }
+        .status-box { background: #e9ecef; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
         .status-box p { margin: 5px 0; font-weight: bold; }
 
-        #ptt-btn {
-            background-color: #555; color: white; height: 120px; border-radius: 60px;
+        /* Updated for Calling: Mute Toggle Button */
+        #mute-btn {
+            background-color: #28a745; color: white; height: 60px; border-radius: 30px;
             border: none; cursor: pointer; user-select: none; font-size: 18px; font-weight: bold;
-            transition: 0.2s; width: 90%; -webkit-tap-highlight-color: transparent;
+            transition: 0.2s; width: 90%; margin-top: 10px;
         }
-        #ptt-btn:active:not(:disabled) { background-color: #28a745; transform: scale(0.95); } 
-        #ptt-btn:disabled { background-color: #dc3545; cursor: not-allowed; opacity: 0.7; } 
+        #mute-btn.muted { background-color: #dc3545; }
 
-        #leave-btn { background-color: #6c757d; color: white; border: none; cursor: pointer; margin-top: 15px;}
+        #leave-btn { background-color: #6c757d; color: white; border: none; cursor: pointer; margin-top: 15px; height: 50px; border-radius: 25px; font-size: 16px;}
         #leave-btn:hover { background-color: #5a6268; }
         
         .divider { font-size: 14px; color: #777; margin: 15px 0; }
@@ -38,35 +38,33 @@
 <body>
 
 <div class="container" id="setup-screen">
-    <h2>E2EE Radio Tower</h2>
-    <p>Select a pre-fixed channel or create your own.</p>
+    <h2>Secure Web Call</h2>
+    <p>Join a room to start calling.</p>
     
     <select id="channel-select">
-        <option value="General-Lobby">General Lobby</option>
-        <option value="Alpha-Squad">Alpha Squad</option>
-        <option value="Beta-Team">Beta Team</option>
-        <option value="Dispatch-Control">Dispatch Control</option>
+        <option value="Room-1">Room 1 (Lobby)</option>
+        <option value="Room-2">Room 2 (Private)</option>
     </select>
 
     <div class="divider">─ OR CREATE CUSTOM ─</div>
 
-    <input type="text" id="channel-custom" placeholder="Type custom channel name...">
+    <input type="text" id="channel-custom" placeholder="Type custom room name...">
     
-    <button id="join-btn" style="background-color: #007bff; color: white; border: none; font-weight: bold;">Connect Radio</button>
+    <button id="join-btn" style="background-color: #007bff; color: white; border: none; font-weight: bold;">Join Call</button>
 </div>
 
 <div class="container" id="dashboard">
-    <h2>Radio Tower</h2>
+    <h2>Live Call</h2>
     
     <div class="status-box">
-        <p>Channel: <span id="ui-channel" style="color: #007bff;">...</span></p>
-        <p>Active Users: <span id="ui-count" style="color: #28a745;">1</span></p>
-        <p id="ui-who-talking" style="color: #dc3545; font-size: 14px;">Channel is open.</p>
+        <p>Room: <span id="ui-channel" style="color: #007bff;">...</span></p>
+        <p>People in Call: <span id="ui-count" style="color: #28a745;">1</span></p>
     </div>
 
-    <button id="ptt-btn" disabled>Waiting for Mic...</button>
+    <!-- Replaced PTT with Mute Button -->
+    <button id="mute-btn">Mute Microphone</button>
     
-    <button id="leave-btn">Leave Channel</button>
+    <button id="leave-btn">End Call</button>
     
     <div id="audio-container"></div>
     
@@ -105,7 +103,6 @@
     // ==========================================
     const myId = Math.floor(100000 + Math.random() * 900000).toString(); 
     
-    // WebRTC Configuration - Critical for International calls
     const rtcConfig = {
         iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
@@ -121,17 +118,17 @@
     let localStream;
     let currentChannel = "";
     let peers = {}; 
+    let isMuted = false;
     
-    let channelRef, myUserRef, talkingRef;
+    let channelRef, myUserRef;
 
     const setupScreen = document.getElementById('setup-screen');
     const dashboard = document.getElementById('dashboard');
-    const pttBtn = document.getElementById('ptt-btn');
+    const muteBtn = document.getElementById('mute-btn');
     const uiCount = document.getElementById('ui-count');
-    const uiWhoTalking = document.getElementById('ui-who-talking');
 
     // ==========================================
-    // 3. JOINING A CHANNEL
+    // 3. JOINING THE CALL
     // ==========================================
     document.getElementById('join-btn').onclick = async () => {
         const selectVal = document.getElementById('channel-select').value;
@@ -140,11 +137,10 @@
         currentChannel = customVal ? customVal.replace(/[^a-zA-Z0-9-_]/g, '') : selectVal;
         
         if(!currentChannel) {
-            alert("Please select or type a valid channel name!");
+            alert("Please select or type a valid room name!");
             return;
         }
 
-        // 1. Microphone Request Block
         try {
             logMessage("Requesting microphone access...");
             if (!localStream) {
@@ -156,39 +152,59 @@
                     } 
                 });
             }
-            localStream.getAudioTracks()[0].enabled = false; 
-            logMessage("Microphone acquired & muted.");
+            // CHANGED FOR CALLING: Mic is active immediately upon joining
+            localStream.getAudioTracks()[0].enabled = true; 
+            isMuted = false;
+            muteBtn.innerText = "Mute Microphone";
+            muteBtn.classList.remove('muted');
+            logMessage("Microphone active.");
         } catch (err) {
             alert("Microphone Error! Ensure you are on HTTPS and gave permission.");
             logMessage(`Mic Error: ${err.message}`);
-            return; // Stop execution if mic permission fails
+            return;
         }
 
-        // 2. Switch Screens
         setupScreen.style.display = 'none';
         dashboard.style.display = 'block';
         document.getElementById('ui-channel').innerText = currentChannel;
-        pttBtn.innerText = "Connecting...";
 
-        // 3. Firebase Connection Block
         try {
             await connectToFirebaseTower();
         } catch (err) {
-            alert("Database Error! Check your Firebase Realtime Database Security Rules.");
+            alert("Database Error! Check your Firebase Security Rules.");
             logMessage(`Firebase Error: ${err.message}`);
         }
     };
 
     // ==========================================
-    // 4. LEAVING A CHANNEL
+    // 4. MUTE TOGGLE LOGIC
+    // ==========================================
+    muteBtn.onclick = () => {
+        if (!localStream) return;
+        
+        isMuted = !isMuted;
+        localStream.getAudioTracks()[0].enabled = !isMuted; // Toggle the audio track
+        
+        if (isMuted) {
+            muteBtn.innerText = "Unmute Microphone";
+            muteBtn.classList.add('muted');
+            logMessage("Microphone muted.");
+        } else {
+            muteBtn.innerText = "Mute Microphone";
+            muteBtn.classList.remove('muted');
+            logMessage("Microphone unmuted.");
+        }
+    };
+
+    // ==========================================
+    // 5. LEAVING THE CALL
     // ==========================================
     document.getElementById('leave-btn').onclick = () => {
         if (!currentChannel) return;
-        logMessage("Leaving channel...");
+        logMessage("Leaving call...");
 
-        if (pttBtn.innerText === "Transmitting...") {
+        if (localStream) {
             localStream.getAudioTracks()[0].enabled = false;
-            talkingRef.set(null);
         }
 
         Object.values(peers).forEach(pc => pc.close());
@@ -202,7 +218,6 @@
         }
         if (channelRef) {
             channelRef.child('users').off();
-            talkingRef.off();
         }
 
         document.getElementById('audio-container').innerHTML = "";
@@ -213,13 +228,12 @@
     };
 
     // ==========================================
-    // 5. FIREBASE SIGNALING
+    // 6. FIREBASE SIGNALING
     // ==========================================
     async function connectToFirebaseTower() {
-        logMessage(`Connecting to signaling server as ID: ${myId}`);
+        logMessage(`Connecting to room as ID: ${myId}`);
         channelRef = database.ref(`channels/${currentChannel}`);
         myUserRef = channelRef.child(`users/${myId}`);
-        talkingRef = channelRef.child('currently_talking');
 
         await myUserRef.set(null);
         await myUserRef.child('presence').set(true);
@@ -229,7 +243,7 @@
             uiCount.innerText = snapshot.numChildren();
         });
 
-        // Mesh Network: Connect to existing users
+        // Connect to existing users in the room
         channelRef.child('users').on('child_added', (snapshot) => {
             const partnerId = snapshot.key;
             if (partnerId !== myId && myId > partnerId) {
@@ -240,11 +254,10 @@
 
         channelRef.child('users').on('child_removed', (snapshot) => {
             const partnerId = snapshot.key;
-            logMessage(`User ${partnerId} disconnected.`);
+            logMessage(`User ${partnerId} left the call.`);
             removePeer(partnerId);
         });
         
-        // Handle incoming calls
         myUserRef.child('offers').on('child_added', async (snapshot) => {
             const partnerId = snapshot.key;
             const offer = snapshot.val();
@@ -260,21 +273,18 @@
                 type: answer.type,
                 sdp: answer.sdp
             });
-            logMessage(`Sent answer to ${partnerId}`);
         });
 
-        // Handle answered calls
         myUserRef.child('answers').on('child_added', async (snapshot) => {
             const partnerId = snapshot.key;
             const answer = snapshot.val();
-            logMessage(`Received answer from ${partnerId}`);
+            logMessage(`Call answered by ${partnerId}`);
             const pc = peers[partnerId];
             if (pc) {
                 await pc.setRemoteDescription(new RTCSessionDescription(answer));
             }
         });
 
-        // Handle ICE network candidates
         myUserRef.child('candidates').on('child_added', (snapshot) => {
             const data = snapshot.val();
             const pc = peers[data.sender];
@@ -282,49 +292,12 @@
                 pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(err => console.error("ICE Error:", err));
             }
         });
-
-        // Push-to-Talk Logic
-        talkingRef.on('value', (snapshot) => {
-            const talkerId = snapshot.val();
-            
-            if (talkerId && talkerId !== myId) {
-                pttBtn.disabled = true;
-                pttBtn.innerText = "Channel Busy...";
-                uiWhoTalking.innerText = `User ${talkerId} is transmitting...`;
-            } else {
-                pttBtn.disabled = false;
-                pttBtn.innerText = talkerId === myId ? "Transmitting..." : "Hold to Talk";
-                uiWhoTalking.innerText = talkerId === myId ? "You are transmitting." : "Channel is open.";
-            }
-        });
-
-        const startTalking = () => {
-            if(pttBtn.disabled) return;
-            localStream.getAudioTracks()[0].enabled = true; 
-            talkingRef.set(myId); 
-        };
-
-        const stopTalking = () => {
-            if(!localStream) return;
-            localStream.getAudioTracks()[0].enabled = false; 
-            talkingRef.once('value').then(snap => {
-                if(snap.val() === myId) talkingRef.set(null); 
-            });
-        };
-
-        // Attach PTT events
-        pttBtn.addEventListener('mousedown', startTalking);
-        pttBtn.addEventListener('mouseup', stopTalking);
-        pttBtn.addEventListener('mouseleave', stopTalking);
-        pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startTalking(); }, {passive: false});
-        pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopTalking(); }, {passive: false});
     }
 
     // ==========================================
-    // 6. WEBRTC CONNECTION BUILDER
+    // 7. WEBRTC CONNECTION BUILDER
     // ==========================================
     function createPeerConnection(partnerId) {
-        logMessage(`Creating WebRTC connection for ${partnerId}`);
         const pc = new RTCPeerConnection(rtcConfig);
         peers[partnerId] = pc;
 
@@ -340,14 +313,13 @@
         };
 
         pc.oniceconnectionstatechange = () => {
-            logMessage(`ICE State (${partnerId}): ${pc.iceConnectionState}`);
             if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
                 removePeer(partnerId);
             }
         };
 
         pc.ontrack = (event) => {
-            logMessage(`Receiving audio stream from ${partnerId}`);
+            logMessage(`Audio stream connected with ${partnerId}`);
             if (!document.getElementById(`audio-${partnerId}`)) {
                 const audioObj = document.createElement('audio');
                 audioObj.id = `audio-${partnerId}`;
@@ -372,7 +344,6 @@
             type: offer.type,
             sdp: offer.sdp
         });
-        logMessage(`Sent offer to ${partnerId}`);
     }
 
     function removePeer(partnerId) {
