@@ -66,7 +66,7 @@
     <h2>In Call</h2>
     <div class="id-display" id="active-partner-display">Connected to: ----</div>
     <button class="btn-end" id="end-btn">End Call</button>
-    <div class="status-text" id="call-duration">Secure connection established.</div>
+    <div class="status-text" id="call-duration">Connecting audio stream...</div>
 </div>
 
 <!-- Hidden audio element to output the remote stream -->
@@ -91,7 +91,6 @@
     // ==========================================
     // 2. DEVICE IDENTITY & WEBRTC SETUP
     // ==========================================
-    // Check local storage for an existing 4-digit ID; if none, generate and save one.
     let myId = localStorage.getItem('secure_call_id');
     if (!myId) {
         myId = Math.floor(1000 + Math.random() * 9000).toString();
@@ -112,6 +111,7 @@
     let peerConnection;
     let currentRoomId = null;
     let partnerId = null;
+    let isCaller = false; // Helps route firewall bypass codes correctly
 
     const myRingRef = database.ref(`users/${myId}/ring`);
     
@@ -124,7 +124,6 @@
     // ==========================================
     // 3. INCOMING CALL LISTENER
     // ==========================================
-    // Continuously listen to see if someone is trying to call this device
     myRingRef.on('value', (snapshot) => {
         const ringData = snapshot.val();
         if (ringData && ringData.caller) {
@@ -135,7 +134,6 @@
             dialScreen.style.display = 'none';
             incomingScreen.style.display = 'block';
         } else {
-            // If the caller cancels the ring before we answer
             if (incomingScreen.style.display === 'block') {
                 resetCallUI();
             }
@@ -143,7 +141,7 @@
     });
 
     // ==========================================
-    // 4. INITIATE A CALL
+    // 4. INITIATE A CALL (CALLER)
     // ==========================================
     document.getElementById('call-btn').onclick = async () => {
         const targetId = document.getElementById('friend-id-input').value.trim();
@@ -153,67 +151,93 @@
         document.getElementById('dial-status').innerText = "Requesting Microphone...";
         
         try {
-            // Ask for mic permission during the button click
             localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
             
             partnerId = targetId;
             currentRoomId = getRoomId(myId, partnerId);
+            isCaller = true;
             
             document.getElementById('dial-status').innerText = `Ringing ${partnerId}...`;
             
-            // Setup WebRTC and create an offer
+            // 1. Prep database room
+            await database.ref(`calls/${currentRoomId}`).set(null); 
+            
+            // 2. Build WebRTC
             createPeerConnection();
             const offer = await peerConnection.createOffer();
             await peerConnection.setLocalDescription(offer);
 
-            // Write the call room data
-            await database.ref(`calls/${currentRoomId}`).set({
-                offer: { type: offer.type, sdp: offer.sdp }
+            // 3. Send Offer
+            await database.ref(`calls/${currentRoomId}/offer`).set({
+                type: offer.type, sdp: offer.sdp
             });
 
-            // Ping the friend's device to trigger their incoming screen
+            // 4. Ring the friend
             await database.ref(`users/${partnerId}/ring`).set({ caller: myId });
 
-            monitorCallRoom();
+            // 5. Wait strictly for the answer BEFORE listening for ICE candidates
+            database.ref(`calls/${currentRoomId}/answer`).on('value', async (snapshot) => {
+                const answer = snapshot.val();
+                if (answer && peerConnection && !peerConnection.currentRemoteDescription) {
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+                    showActiveCall();
+                    
+                    // Now it is safe to pull the friend's firewall bypass codes
+                    database.ref(`calls/${currentRoomId}/calleeCandidates`).on('child_added', (snap) => {
+                        if (snap.val()) peerConnection.addIceCandidate(new RTCIceCandidate(snap.val())).catch(console.error);
+                    });
+                }
+            });
+
+            listenForHangup();
 
         } catch (err) {
             alert("Microphone access is required to make a call.");
             document.getElementById('dial-status').innerText = "Ready to call.";
+            console.error(err);
         }
     };
 
     // ==========================================
-    // 5. ANSWER A CALL
+    // 5. ANSWER A CALL (CALLEE)
     // ==========================================
     document.getElementById('answer-btn').onclick = async () => {
         try {
-            // Ask for mic permission exactly when they click Answer
             localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            isCaller = false;
             
             createPeerConnection();
             
-            // Read the caller's offer from the database
-            const snapshot = await database.ref(`calls/${currentRoomId}/offer`).once('value');
-            const offer = snapshot.val();
+            // 1. Read the caller's offer
+            const offerSnap = await database.ref(`calls/${currentRoomId}/offer`).once('value');
+            const offer = offerSnap.val();
             
             if (offer) {
+                // 2. Set remote description immediately
                 await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+                
+                // 3. Generate Answer
                 const answer = await peerConnection.createAnswer();
                 await peerConnection.setLocalDescription(answer);
                 
-                // Send the answer back
+                // 4. Send Answer back
                 await database.ref(`calls/${currentRoomId}/answer`).set({
                     type: answer.type, sdp: answer.sdp
                 });
 
-                // Clear the ringing state
                 await myRingRef.remove();
-                
                 showActiveCall();
-                monitorCallRoom();
+                
+                // 5. Now it is safe to pull the caller's firewall bypass codes
+                database.ref(`calls/${currentRoomId}/callerCandidates`).on('child_added', (snap) => {
+                    if (snap.val()) peerConnection.addIceCandidate(new RTCIceCandidate(snap.val())).catch(console.error);
+                });
+
+                listenForHangup();
             }
         } catch (err) {
             alert("Microphone access is required to answer.");
+            console.error(err);
         }
     };
 
@@ -230,36 +254,16 @@
 
     async function endCall() {
         if (currentRoomId) {
-            // Deleting the room tells the other person's device to hang up automatically
             await database.ref(`calls/${currentRoomId}`).remove();
         }
         await myRingRef.remove();
         resetCallUI();
     }
 
-    // Monitor the room to see if the other person answers or hangs up
-    function monitorCallRoom() {
-        database.ref(`calls/${currentRoomId}`).on('value', async (snapshot) => {
-            const data = snapshot.val();
-            
-            // If the room vanishes, the other person hung up or refreshed
-            if (!data) {
+    function listenForHangup() {
+        database.ref(`calls/${currentRoomId}`).on('value', (snapshot) => {
+            if (!snapshot.exists()) {
                 resetCallUI();
-                return;
-            }
-
-            // If we are the caller, wait for the answer to appear
-            if (data.answer && !peerConnection.currentRemoteDescription) {
-                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
-                showActiveCall();
-            }
-        });
-
-        // Listen for network firewall bypass codes (ICE Candidates)
-        database.ref(`calls/${currentRoomId}/candidates/${partnerId}`).on('child_added', (snapshot) => {
-            const candidate = snapshot.val();
-            if (candidate && peerConnection) {
-                peerConnection.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.error);
             }
         });
     }
@@ -270,17 +274,26 @@
     function createPeerConnection() {
         peerConnection = new RTCPeerConnection(rtcConfig);
 
-        // Add our microphone stream to the call
         localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
-        // When the TURN server finds a firewall bypass, send it to the friend
+        // Push firewall bypass codes to Firebase based on who is calling who
         peerConnection.onicecandidate = (event) => {
             if (event.candidate && currentRoomId) {
-                database.ref(`calls/${currentRoomId}/candidates/${myId}`).push(event.candidate.toJSON());
+                const nodeName = isCaller ? 'callerCandidates' : 'calleeCandidates';
+                database.ref(`calls/${currentRoomId}/${nodeName}`).push(event.candidate.toJSON());
             }
         };
 
-        // When the friend's audio stream arrives, play it
+        // Live Diagnostic Tracker for the UI
+        peerConnection.oniceconnectionstatechange = () => {
+            const state = peerConnection.iceConnectionState;
+            const statusText = document.getElementById('call-duration');
+            if (state === "checking") statusText.innerText = "Bypassing firewalls...";
+            if (state === "connected") statusText.innerText = "Secure Connection Active! 🟢";
+            if (state === "failed") statusText.innerText = "Connection Blocked by Network 🔴";
+        };
+
+        // Play incoming audio
         peerConnection.ontrack = (event) => {
             remoteAudio.srcObject = event.streams[0];
             remoteAudio.play().catch(e => console.error("Audio block:", e));
@@ -290,7 +303,6 @@
     // ==========================================
     // 8. UTILITIES
     // ==========================================
-    // Ensures both users generate the exact same database room string regardless of who calls who
     function getRoomId(id1, id2) {
         return id1 < id2 ? `${id1}_${id2}` : `${id2}_${id1}`;
     }
@@ -303,7 +315,6 @@
     }
 
     function resetCallUI() {
-        // Disconnect WebRTC and turn off the microphone hardware
         if (peerConnection) {
             peerConnection.close();
             peerConnection = null;
@@ -313,10 +324,11 @@
             localStream = null;
         }
         
-        // Detach database listeners
         if (currentRoomId) {
             database.ref(`calls/${currentRoomId}`).off();
-            database.ref(`calls/${currentRoomId}/candidates/${partnerId}`).off();
+            database.ref(`calls/${currentRoomId}/answer`).off();
+            database.ref(`calls/${currentRoomId}/callerCandidates`).off();
+            database.ref(`calls/${currentRoomId}/calleeCandidates`).off();
         }
 
         currentRoomId = null;
@@ -329,7 +341,6 @@
         document.getElementById('friend-id-input').value = "";
     }
 
-    // Automatically hang up if the user closes the browser tab
     window.addEventListener('beforeunload', () => {
         if (currentRoomId) database.ref(`calls/${currentRoomId}`).remove();
         myRingRef.remove();
