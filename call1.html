@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure WebRTC Calling</title>
+    
+    <!-- Firebase for connection handshakes -->
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 20px; background-color: #121212; color: #fff; }
+        .container { max-width: 350px; margin: auto; padding: 30px 20px; background: #1e1e1e; border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        
+        h2 { margin-top: 0; color: #fff; font-size: 24px; }
+        .id-display { background: #333; padding: 15px; border-radius: 8px; margin-bottom: 25px; font-size: 22px; font-weight: bold; letter-spacing: 2px; color: #4dabf7; }
+        
+        input { padding: 15px; margin: 10px 0; width: 100%; box-sizing: border-box; font-size: 18px; text-align: center; border-radius: 8px; border: none; background: #2a2a2a; color: white; }
+        input::placeholder { color: #888; }
+        
+        button { padding: 15px; width: 100%; font-size: 18px; border-radius: 8px; border: none; cursor: pointer; font-weight: bold; transition: 0.2s; margin-top: 10px; }
+        
+        /* Button States */
+        .btn-call { background-color: #2b8a3e; color: white; }
+        .btn-call:hover { background-color: #23b23e; }
+        
+        .btn-answer { background-color: #0b7285; color: white; animation: pulse 1.5s infinite; }
+        
+        .btn-end { background-color: #c92a2a; color: white; }
+        .btn-end:hover { background-color: #e03131; }
+
+        /* Sections */
+        #dial-screen { display: block; }
+        #incoming-screen { display: none; }
+        #active-call-screen { display: none; }
+        
+        .status-text { margin-top: 15px; color: #aaa; font-size: 14px; }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container" id="dial-screen">
+    <h2>Secure Phone</h2>
+    <div class="id-display" id="my-id-display">ID: ----</div>
+    
+    <input type="text" id="friend-id-input" placeholder="Enter 4-Digit ID" maxlength="4">
+    <button class="btn-call" id="call-btn">Call</button>
+    <div class="status-text" id="dial-status">Ready to call.</div>
+</div>
+
+<div class="container" id="incoming-screen">
+    <h2>Incoming Call</h2>
+    <div class="id-display" id="caller-id-display">From: ----</div>
+    <button class="btn-answer" id="answer-btn">Answer & Allow Mic</button>
+    <button class="btn-end" id="decline-btn">Decline</button>
+</div>
+
+<div class="container" id="active-call-screen">
+    <h2>In Call</h2>
+    <div class="id-display" id="active-partner-display">Connected to: ----</div>
+    <button class="btn-end" id="end-btn">End Call</button>
+    <div class="status-text" id="call-duration">Secure connection established.</div>
+</div>
+
+<!-- Hidden audio element to output the remote stream -->
+<audio id="remote-audio" autoplay playsinline></audio>
+
+<script>
+    // ==========================================
+    // 1. FIREBASE CONFIGURATION
+    // ==========================================
+    const firebaseConfig = {
+        apiKey: "AIzaSyAN2KhtSuruzJVAMbtM6AYF34TfNAzqtrk",
+        authDomain: "web-walkie-talkie.firebaseapp.com",
+        databaseURL: "https://web-walkie-talkie-default-rtdb.asia-southeast1.firebasedatabase.app",
+        projectId: "web-walkie-talkie",
+        storageBucket: "web-walkie-talkie.firebasestorage.app",
+        messagingSenderId: "540679406004",
+        appId: "1:540679406004:web:20d5ace367b173758af2e1"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const database = firebase.database();
+
+    // ==========================================
+    // 2. DEVICE IDENTITY & WEBRTC SETUP
+    // ==========================================
+    // Check local storage for an existing 4-digit ID; if none, generate and save one.
+    let myId = localStorage.getItem('secure_call_id');
+    if (!myId) {
+        myId = Math.floor(1000 + Math.random() * 9000).toString();
+        localStorage.setItem('secure_call_id', myId);
+    }
+    document.getElementById('my-id-display').innerText = `ID: ${myId}`;
+
+    const rtcConfig = {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'turn:global.relay.metered.ca:80', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' },
+            { urls: 'turn:global.relay.metered.ca:443', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' }
+        ]
+    };
+
+    let localStream;
+    let peerConnection;
+    let currentRoomId = null;
+    let partnerId = null;
+
+    const myRingRef = database.ref(`users/${myId}/ring`);
+    
+    // UI Elements
+    const dialScreen = document.getElementById('dial-screen');
+    const incomingScreen = document.getElementById('incoming-screen');
+    const activeScreen = document.getElementById('active-call-screen');
+    const remoteAudio = document.getElementById('remote-audio');
+
+    // ==========================================
+    // 3. INCOMING CALL LISTENER
+    // ==========================================
+    // Continuously listen to see if someone is trying to call this device
+    myRingRef.on('value', (snapshot) => {
+        const ringData = snapshot.val();
+        if (ringData && ringData.caller) {
+            partnerId = ringData.caller;
+            currentRoomId = getRoomId(myId, partnerId);
+            
+            document.getElementById('caller-id-display').innerText = `From: ${partnerId}`;
+            dialScreen.style.display = 'none';
+            incomingScreen.style.display = 'block';
+        } else {
+            // If the caller cancels the ring before we answer
+            if (incomingScreen.style.display === 'block') {
+                resetCallUI();
+            }
+        }
+    });
+
+    // ==========================================
+    // 4. INITIATE A CALL
+    // ==========================================
+    document.getElementById('call-btn').onclick = async () => {
+        const targetId = document.getElementById('friend-id-input').value.trim();
+        if (targetId.length !== 4) return alert("Please enter a valid 4-digit ID.");
+        if (targetId === myId) return alert("You cannot call yourself.");
+
+        document.getElementById('dial-status').innerText = "Requesting Microphone...";
+        
+        try {
+            // Ask for mic permission during the button click
+            localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            
+            partnerId = targetId;
+            currentRoomId = getRoomId(myId, partnerId);
+            
+            document.getElementById('dial-status').innerText = `Ringing ${partnerId}...`;
+            
+            // Setup WebRTC and create an offer
+            createPeerConnection();
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+
+            // Write the call room data
+            await database.ref(`calls/${currentRoomId}`).set({
+                offer: { type: offer.type, sdp: offer.sdp }
+            });
+
+            // Ping the friend's device to trigger their incoming screen
+            await database.ref(`users/${partnerId}/ring`).set({ caller: myId });
+
+            monitorCallRoom();
+
+        } catch (err) {
+            alert("Microphone access is required to make a call.");
+            document.getElementById('dial-status').innerText = "Ready to call.";
+        }
+    };
+
+    // ==========================================
+    // 5. ANSWER A CALL
+    // ==========================================
+    document.getElementById('answer-btn').onclick = async () => {
+        try {
+            // Ask for mic permission exactly when they click Answer
+            localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            
+            createPeerConnection();
+            
+            // Read the caller's offer from the database
+            const snapshot = await database.ref(`calls/${currentRoomId}/offer`).once('value');
+            const offer = snapshot.val();
+            
+            if (offer) {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                
+                // Send the answer back
+                await database.ref(`calls/${currentRoomId}/answer`).set({
+                    type: answer.type, sdp: answer.sdp
+                });
+
+                // Clear the ringing state
+                await myRingRef.remove();
+                
+                showActiveCall();
+                monitorCallRoom();
+            }
+        } catch (err) {
+            alert("Microphone access is required to answer.");
+        }
+    };
+
+    document.getElementById('decline-btn').onclick = async () => {
+        await myRingRef.remove();
+        if (currentRoomId) await database.ref(`calls/${currentRoomId}`).remove();
+        resetCallUI();
+    };
+
+    // ==========================================
+    // 6. ENDING THE CALL
+    // ==========================================
+    document.getElementById('end-btn').onclick = () => endCall();
+
+    async function endCall() {
+        if (currentRoomId) {
+            // Deleting the room tells the other person's device to hang up automatically
+            await database.ref(`calls/${currentRoomId}`).remove();
+        }
+        await myRingRef.remove();
+        resetCallUI();
+    }
+
+    // Monitor the room to see if the other person answers or hangs up
+    function monitorCallRoom() {
+        database.ref(`calls/${currentRoomId}`).on('value', async (snapshot) => {
+            const data = snapshot.val();
+            
+            // If the room vanishes, the other person hung up or refreshed
+            if (!data) {
+                resetCallUI();
+                return;
+            }
+
+            // If we are the caller, wait for the answer to appear
+            if (data.answer && !peerConnection.currentRemoteDescription) {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                showActiveCall();
+            }
+        });
+
+        // Listen for network firewall bypass codes (ICE Candidates)
+        database.ref(`calls/${currentRoomId}/candidates/${partnerId}`).on('child_added', (snapshot) => {
+            const candidate = snapshot.val();
+            if (candidate && peerConnection) {
+                peerConnection.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.error);
+            }
+        });
+    }
+
+    // ==========================================
+    // 7. WEBRTC CONNECTION BUILDER
+    // ==========================================
+    function createPeerConnection() {
+        peerConnection = new RTCPeerConnection(rtcConfig);
+
+        // Add our microphone stream to the call
+        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+        // When the TURN server finds a firewall bypass, send it to the friend
+        peerConnection.onicecandidate = (event) => {
+            if (event.candidate && currentRoomId) {
+                database.ref(`calls/${currentRoomId}/candidates/${myId}`).push(event.candidate.toJSON());
+            }
+        };
+
+        // When the friend's audio stream arrives, play it
+        peerConnection.ontrack = (event) => {
+            remoteAudio.srcObject = event.streams[0];
+            remoteAudio.play().catch(e => console.error("Audio block:", e));
+        };
+    }
+
+    // ==========================================
+    // 8. UTILITIES
+    // ==========================================
+    // Ensures both users generate the exact same database room string regardless of who calls who
+    function getRoomId(id1, id2) {
+        return id1 < id2 ? `${id1}_${id2}` : `${id2}_${id1}`;
+    }
+
+    function showActiveCall() {
+        dialScreen.style.display = 'none';
+        incomingScreen.style.display = 'none';
+        activeScreen.style.display = 'block';
+        document.getElementById('active-partner-display').innerText = `Connected to: ${partnerId}`;
+    }
+
+    function resetCallUI() {
+        // Disconnect WebRTC and turn off the microphone hardware
+        if (peerConnection) {
+            peerConnection.close();
+            peerConnection = null;
+        }
+        if (localStream) {
+            localStream.getTracks().forEach(track => track.stop());
+            localStream = null;
+        }
+        
+        // Detach database listeners
+        if (currentRoomId) {
+            database.ref(`calls/${currentRoomId}`).off();
+            database.ref(`calls/${currentRoomId}/candidates/${partnerId}`).off();
+        }
+
+        currentRoomId = null;
+        partnerId = null;
+        
+        dialScreen.style.display = 'block';
+        incomingScreen.style.display = 'none';
+        activeScreen.style.display = 'none';
+        document.getElementById('dial-status').innerText = "Ready to call.";
+        document.getElementById('friend-id-input').value = "";
+    }
+
+    // Automatically hang up if the user closes the browser tab
+    window.addEventListener('beforeunload', () => {
+        if (currentRoomId) database.ref(`calls/${currentRoomId}`).remove();
+        myRingRef.remove();
+    });
+</script>
+
+</body>
+</html>
