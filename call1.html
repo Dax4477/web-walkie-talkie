@@ -111,11 +111,10 @@
     let peerConnection;
     let currentRoomId = null;
     let partnerId = null;
-    let isCaller = false; // Helps route firewall bypass codes correctly
+    let isCaller = false; 
 
     const myRingRef = database.ref(`users/${myId}/ring`);
     
-    // UI Elements
     const dialScreen = document.getElementById('dial-screen');
     const incomingScreen = document.getElementById('incoming-screen');
     const activeScreen = document.getElementById('active-call-screen');
@@ -159,30 +158,24 @@
             
             document.getElementById('dial-status').innerText = `Ringing ${partnerId}...`;
             
-            // 1. Prep database room
             await database.ref(`calls/${currentRoomId}`).set(null); 
             
-            // 2. Build WebRTC
             createPeerConnection();
             const offer = await peerConnection.createOffer();
             await peerConnection.setLocalDescription(offer);
 
-            // 3. Send Offer
             await database.ref(`calls/${currentRoomId}/offer`).set({
                 type: offer.type, sdp: offer.sdp
             });
 
-            // 4. Ring the friend
             await database.ref(`users/${partnerId}/ring`).set({ caller: myId });
 
-            // 5. Wait strictly for the answer BEFORE listening for ICE candidates
             database.ref(`calls/${currentRoomId}/answer`).on('value', async (snapshot) => {
                 const answer = snapshot.val();
                 if (answer && peerConnection && !peerConnection.currentRemoteDescription) {
                     await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
                     showActiveCall();
                     
-                    // Now it is safe to pull the friend's firewall bypass codes
                     database.ref(`calls/${currentRoomId}/calleeCandidates`).on('child_added', (snap) => {
                         if (snap.val()) peerConnection.addIceCandidate(new RTCIceCandidate(snap.val())).catch(console.error);
                     });
@@ -208,27 +201,23 @@
             
             createPeerConnection();
             
-            // 1. Read the caller's offer
             const offerSnap = await database.ref(`calls/${currentRoomId}/offer`).once('value');
             const offer = offerSnap.val();
             
             if (offer) {
-                // 2. Set remote description immediately
                 await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
                 
-                // 3. Generate Answer
                 const answer = await peerConnection.createAnswer();
                 await peerConnection.setLocalDescription(answer);
                 
-                // 4. Send Answer back
                 await database.ref(`calls/${currentRoomId}/answer`).set({
                     type: answer.type, sdp: answer.sdp
                 });
 
-                await myRingRef.remove();
+                // FIX: Show the active call screen BEFORE deleting the ring notification to prevent the crash
                 showActiveCall();
+                await myRingRef.remove();
                 
-                // 5. Now it is safe to pull the caller's firewall bypass codes
                 database.ref(`calls/${currentRoomId}/callerCandidates`).on('child_added', (snap) => {
                     if (snap.val()) peerConnection.addIceCandidate(new RTCIceCandidate(snap.val())).catch(console.error);
                 });
@@ -261,6 +250,9 @@
     }
 
     function listenForHangup() {
+        // FIX: Ensure we are actually in a room before listening for it to be deleted
+        if (!currentRoomId) return; 
+        
         database.ref(`calls/${currentRoomId}`).on('value', (snapshot) => {
             if (!snapshot.exists()) {
                 resetCallUI();
@@ -276,7 +268,6 @@
 
         localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
-        // Push firewall bypass codes to Firebase based on who is calling who
         peerConnection.onicecandidate = (event) => {
             if (event.candidate && currentRoomId) {
                 const nodeName = isCaller ? 'callerCandidates' : 'calleeCandidates';
@@ -284,7 +275,6 @@
             }
         };
 
-        // Live Diagnostic Tracker for the UI
         peerConnection.oniceconnectionstatechange = () => {
             const state = peerConnection.iceConnectionState;
             const statusText = document.getElementById('call-duration');
@@ -293,7 +283,6 @@
             if (state === "failed") statusText.innerText = "Connection Blocked by Network 🔴";
         };
 
-        // Play incoming audio
         peerConnection.ontrack = (event) => {
             remoteAudio.srcObject = event.streams[0];
             remoteAudio.play().catch(e => console.error("Audio block:", e));
