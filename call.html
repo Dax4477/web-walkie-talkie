@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Direct Web Call</title>
+    
+    <!-- Pure WebRTC via Firebase (Bypasses Russian/Indian ISP Blocks) -->
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 20px; background-color: #121212; color: #ffffff; }
+        .container { max-width: 400px; margin: 40px auto; padding: 30px; background: #1e1e1e; border-radius: 15px; box-shadow: 0 8px 20px rgba(0,0,0,0.5); }
+        
+        .code-display { font-size: 48px; font-weight: bold; color: #4CAF50; letter-spacing: 5px; margin: 10px 0 30px 0; }
+        
+        input { padding: 15px; margin: 10px 0; width: 85%; font-size: 20px; text-align: center; border-radius: 8px; border: none; outline: none; letter-spacing: 3px; font-weight: bold; background: #2c2c2c; color: white;}
+        input::placeholder { color: #888; font-weight: normal; letter-spacing: normal; }
+        
+        button { padding: 15px; margin: 10px 5px; width: 40%; font-size: 16px; font-weight: bold; border-radius: 8px; border: none; cursor: pointer; transition: 0.2s; }
+        #call-btn { background-color: #4CAF50; color: white; width: 85%; }
+        #call-btn:hover { background-color: #45a049; }
+        
+        #hangup-btn { background-color: #f44336; color: white; display: none; width: 85%; }
+        #hangup-btn:hover { background-color: #da190b; }
+
+        .status { margin-top: 20px; font-size: 14px; color: #aaa; }
+        .status.active { color: #4CAF50; font-weight: bold; animation: pulse 2s infinite; }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Your Device Code</h2>
+    <div class="code-display" id="my-code">----</div>
+    
+    <div id="call-controls">
+        <input type="text" id="friend-code" placeholder="Enter Friend's Code" maxlength="4">
+        <button id="call-btn">Start Call</button>
+    </div>
+
+    <button id="hangup-btn">End Call</button>
+    
+    <div class="status" id="status-text">Waiting for connection...</div>
+    
+    <!-- Hidden container for the incoming audio -->
+    <div id="audio-container"></div>
+</div>
+
+<script>
+    // ==========================================
+    // 1. GENERATE OR FETCH PERMANENT 4-DIGIT CODE
+    // ==========================================
+    let myCode = localStorage.getItem('web_call_code');
+    if (!myCode) {
+        // Generate a random 4 digit number (1000 - 9999) if this device doesn't have one yet
+        myCode = Math.floor(1000 + Math.random() * 9000).toString();
+        localStorage.setItem('web_call_code', myCode);
+    }
+    document.getElementById('my-code').innerText = myCode;
+
+    // ==========================================
+    // 2. FIREBASE CONFIG
+    // ==========================================
+    const firebaseConfig = {
+        apiKey: "AIzaSyAN2KhtSuruzJVAMbtM6AYF34TfNAzqtrk",
+        authDomain: "web-walkie-talkie.firebaseapp.com",
+        databaseURL: "https://web-walkie-talkie-default-rtdb.asia-southeast1.firebasedatabase.app",
+        projectId: "web-walkie-talkie",
+        storageBucket: "web-walkie-talkie.firebasestorage.app",
+        messagingSenderId: "540679406004",
+        appId: "1:540679406004:web:20d5ace367b173758af2e1"
+    };
+    
+    firebase.initializeApp(firebaseConfig);
+    const database = firebase.database();
+
+    // ==========================================
+    // 3. PURE WEBRTC & TURN SERVERS
+    // ==========================================
+    const rtcConfig = {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'turn:global.relay.metered.ca:80', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' },
+            { urls: 'turn:global.relay.metered.ca:443', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' },
+            { urls: 'turn:global.relay.metered.ca:443?transport=tcp', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' }
+        ]
+    };
+
+    let localStream;
+    let peerConnection;
+    let currentPartner = null;
+    const myRef = database.ref(`users/${myCode}`);
+
+    // UI Elements
+    const statusText = document.getElementById('status-text');
+    const callBtn = document.getElementById('call-btn');
+    const hangupBtn = document.getElementById('hangup-btn');
+    const callControls = document.getElementById('call-controls');
+
+    // ==========================================
+    // 4. MICROPHONE SETUP (Always On, Echo Canceling)
+    // ==========================================
+    async function initMic() {
+        if (!localStream) {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } 
+                });
+            } catch (err) {
+                alert("Microphone access is required to make calls.");
+                console.error(err);
+            }
+        }
+    }
+
+    // ==========================================
+    // 5. LISTEN FOR INCOMING CALLS
+    // ==========================================
+    // We clear old data on load so stale calls don't trigger
+    myRef.set(null);
+
+    // If someone sends an offer to our 4-digit code
+    myRef.child('offers').on('child_added', async (snapshot) => {
+        if (peerConnection) return; // Ignore if already in a call
+        
+        const callerCode = snapshot.key;
+        const offer = snapshot.val();
+        currentPartner = callerCode;
+        
+        statusText.innerText = `Incoming call from ${callerCode}... Connecting!`;
+        await initMic();
+
+        peerConnection = createPeerConnection(callerCode);
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+        
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        
+        // Send our answer back
+        database.ref(`users/${callerCode}/answers/${myCode}`).set({
+            type: answer.type,
+            sdp: answer.sdp
+        });
+
+        updateUIForCall();
+    });
+
+    // Listen for answers to calls we initiated
+    myRef.child('answers').on('child_added', async (snapshot) => {
+        const answer = snapshot.val();
+        if (peerConnection) {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+        }
+    });
+
+    // Listen for firewall bypass codes (ICE Candidates)
+    myRef.child('candidates').on('child_added', (snapshot) => {
+        const data = snapshot.val();
+        if (peerConnection && data.candidate) {
+            peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(console.error);
+        }
+    });
+
+    // Listen for the other person hanging up
+    myRef.child('hangup').on('value', (snapshot) => {
+        if (snapshot.val() === true) {
+            endCallLocally("The other person ended the call.");
+        }
+    });
+
+
+    // ==========================================
+    // 6. MAKE A CALL
+    // ==========================================
+    callBtn.onclick = async () => {
+        const friendCode = document.getElementById('friend-code').value.trim();
+        if (friendCode.length !== 4) return alert("Please enter a valid 4-digit code.");
+        if (friendCode === myCode) return alert("You cannot call yourself.");
+
+        currentPartner = friendCode;
+        statusText.innerText = `Calling ${friendCode}...`;
+        
+        await initMic();
+        peerConnection = createPeerConnection(friendCode);
+        
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        
+        // Send the offer to the friend's database node
+        database.ref(`users/${friendCode}/offers/${myCode}`).set({
+            type: offer.type,
+            sdp: offer.sdp
+        });
+
+        updateUIForCall();
+    };
+
+    // ==========================================
+    // 7. WEBRTC CONNECTION BUILDER
+    // ==========================================
+    function createPeerConnection(partnerCode) {
+        const pc = new RTCPeerConnection(rtcConfig);
+
+        // Add our microphone to the connection
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+        // Send network paths through Firebase
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                database.ref(`users/${partnerCode}/candidates`).push({
+                    sender: myCode,
+                    candidate: event.candidate.toJSON()
+                });
+            }
+        };
+
+        // When we successfully receive the friend's audio stream
+        pc.ontrack = (event) => {
+            statusText.innerText = "Call Connected! 🟢";
+            statusText.className = "status active";
+
+            if (!document.getElementById(`audio-${partnerCode}`)) {
+                const audioObj = document.createElement('audio');
+                audioObj.id = `audio-${partnerCode}`;
+                audioObj.srcObject = event.streams[0];
+                audioObj.autoplay = true;
+                audioObj.playsInline = true; 
+                document.getElementById('audio-container').appendChild(audioObj);
+                
+                audioObj.play().catch(e => console.error("Audio block:", e));
+            }
+        };
+
+        return pc;
+    }
+
+    // ==========================================
+    // 8. HANG UP & CLEANUP
+    // ==========================================
+    hangupBtn.onclick = () => {
+        // Tell the other person we hung up
+        if (currentPartner) {
+            database.ref(`users/${currentPartner}/hangup`).set(true);
+        }
+        endCallLocally("Call ended.");
+    };
+
+    function endCallLocally(message) {
+        if (peerConnection) {
+            peerConnection.close();
+            peerConnection = null;
+        }
+
+        // Wipe our database node clean so we can receive new calls
+        myRef.set(null);
+        currentPartner = null;
+
+        document.getElementById('audio-container').innerHTML = "";
+        
+        callControls.style.display = "block";
+        hangupBtn.style.display = "none";
+        
+        statusText.innerText = message;
+        statusText.className = "status";
+    }
+
+    function updateUIForCall() {
+        callControls.style.display = "none";
+        hangupBtn.style.display = "inline-block";
+    }
+
+</script>
+
+</body>
+</html>
