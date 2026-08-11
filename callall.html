@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Secure WebRTC Super-App</title>
+    
+    <!-- Firebase for connection handshakes -->
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; background-color: #121212; color: #fff; display: flex; justify-content: center; }
+        .container { width: 100%; max-width: 450px; background: #1e1e1e; border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); padding: 20px; box-sizing: border-box; }
+        
+        h2, h3 { margin-top: 0; color: #fff; text-align: center;}
+        .id-display { background: #333; padding: 15px; border-radius: 8px; margin-bottom: 20px; font-size: 22px; font-weight: bold; text-align: center; color: #4dabf7; letter-spacing: 2px;}
+        
+        input { padding: 12px; margin: 8px 0; width: 100%; box-sizing: border-box; font-size: 16px; border-radius: 8px; border: none; background: #2a2a2a; color: white; }
+        
+        button { padding: 12px; width: 100%; font-size: 16px; border-radius: 8px; border: none; cursor: pointer; font-weight: bold; transition: 0.2s; margin-top: 5px; color: white; }
+        .btn-call { background-color: #2b8a3e; } .btn-call:hover { background-color: #23b23e; }
+        .btn-answer { background-color: #0b7285; animation: pulse 1.5s infinite; }
+        .btn-end { background-color: #c92a2a; } .btn-end:hover { background-color: #e03131; }
+        .btn-control { background-color: #495057; width: 48%; display: inline-block; margin-right: 2%; font-size: 14px;}
+        .btn-control:last-child { margin-right: 0; }
+        .btn-control.active { background-color: #e03131; }
+
+        /* Sections */
+        #dial-screen { display: block; }
+        #incoming-screen { display: none; text-align: center; }
+        #active-call-screen { display: none; }
+        
+        .status-text { margin-top: 10px; color: #aaa; font-size: 14px; text-align: center;}
+
+        /* Contact Book */
+        .contact-box { background: #252525; border-radius: 8px; padding: 10px; margin-bottom: 20px; }
+        .contact-item { display: flex; justify-content: space-between; background: #333; padding: 8px; border-radius: 5px; margin-top: 5px; cursor: pointer; transition: 0.2s;}
+        .contact-item:hover { background: #444; }
+
+        /* Video & Canvas */
+        .video-container { position: relative; margin-bottom: 15px; border-radius: 8px; overflow: hidden; background: #000; height: 250px; }
+        #remote-video { width: 100%; height: 100%; object-fit: cover; }
+        #local-video { position: absolute; bottom: 10px; right: 10px; width: 80px; height: 100px; object-fit: cover; border-radius: 8px; border: 2px solid #333; z-index: 2; }
+        #audio-visualizer { width: 100%; height: 60px; background: #252525; border-radius: 8px; margin-bottom: 15px; display: block; }
+
+        /* Chat */
+        .chat-box { background: #252525; border-radius: 8px; padding: 10px; margin-bottom: 15px; }
+        #chat-messages { height: 100px; overflow-y: auto; background: #1a1a1a; padding: 5px; border-radius: 5px; margin-bottom: 5px; font-size: 14px; }
+        .chat-msg { margin: 2px 0; }
+        .chat-msg.me { color: #4dabf7; text-align: right; }
+        .chat-msg.them { color: #51cf66; text-align: left; }
+        .chat-input-row { display: flex; gap: 5px; }
+        .chat-input-row input { margin: 0; }
+        .chat-input-row button { width: 60px; margin: 0; background: #4dabf7; }
+
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
+    </style>
+</head>
+<body>
+
+<!-- SCREEN 1: DIALER & ADDRESS BOOK -->
+<div class="container" id="dial-screen">
+    <h2>Secure Comms</h2>
+    <div class="id-display" id="my-id-display">ID: ----</div>
+    
+    <!-- Upgrade: Address Book -->
+    <div class="contact-box">
+        <h3 style="font-size: 16px; margin-bottom: 5px;">Address Book</h3>
+        <div style="display: flex; gap: 5px;">
+            <input type="text" id="contact-name" placeholder="Name" style="width: 60%;">
+            <input type="text" id="contact-id" placeholder="ID" maxlength="4" style="width: 40%;">
+        </div>
+        <button onclick="saveContact()" style="background: #444; padding: 8px; font-size: 14px;">+ Save Contact</button>
+        <div id="contact-list" style="margin-top: 10px; max-height: 100px; overflow-y: auto;"></div>
+    </div>
+
+    <input type="text" id="friend-id-input" placeholder="Enter 4-Digit ID to Call" maxlength="4" style="font-size: 20px; text-align: center;">
+    <button class="btn-call" id="call-btn">Start Secure Call</button>
+    <div class="status-text" id="dial-status">Ready to call.</div>
+</div>
+
+<!-- SCREEN 2: INCOMING CALL -->
+<div class="container" id="incoming-screen">
+    <h2>Incoming Call</h2>
+    <div class="id-display" id="caller-id-display">From: ----</div>
+    <button class="btn-answer" id="answer-btn">Answer (Camera & Mic)</button>
+    <button class="btn-end" id="decline-btn">Decline</button>
+</div>
+
+<!-- SCREEN 3: ACTIVE CALL (VIDEO, VISUALIZER, CHAT, CONTROLS) -->
+<div class="container" id="active-call-screen">
+    
+    <!-- Upgrade: Video Mode -->
+    <div class="video-container">
+        <video id="remote-video" autoplay playsinline></video>
+        <video id="local-video" autoplay playsinline muted></video>
+    </div>
+
+    <!-- Upgrade: Audio Visualizer -->
+    <canvas id="audio-visualizer"></canvas>
+
+    <!-- Upgrade: Hardware Controls & Screen Share -->
+    <div style="margin-bottom: 15px;">
+        <button class="btn-control" id="mute-btn">Mute Mic</button>
+        <button class="btn-control" id="camera-btn">Stop Cam</button>
+    </div>
+    <div style="margin-bottom: 15px;">
+        <button class="btn-control" id="screen-btn" style="width: 100%;">Share Screen</button>
+    </div>
+
+    <!-- Upgrade: P2P Encrypted Chat -->
+    <div class="chat-box">
+        <div id="chat-messages"></div>
+        <div class="chat-input-row">
+            <input type="text" id="chat-input" placeholder="Secure message...">
+            <button id="send-chat-btn">Send</button>
+        </div>
+    </div>
+
+    <button class="btn-end" id="end-btn">End Call</button>
+    <div class="status-text" id="call-duration">Connecting streams...</div>
+</div>
+
+
+<script>
+    // ==========================================
+    // 1. FIREBASE CONFIGURATION
+    // ==========================================
+    const firebaseConfig = {
+        apiKey: "AIzaSyAN2KhtSuruzJVAMbtM6AYF34TfNAzqtrk",
+        authDomain: "web-walkie-talkie.firebaseapp.com",
+        databaseURL: "https://web-walkie-talkie-default-rtdb.asia-southeast1.firebasedatabase.app",
+        projectId: "web-walkie-talkie",
+        storageBucket: "web-walkie-talkie.firebasestorage.app",
+        messagingSenderId: "540679406004",
+        appId: "1:540679406004:web:20d5ace367b173758af2e1"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const database = firebase.database();
+
+    // ==========================================
+    // 2. IDENTITY & ADDRESS BOOK
+    // ==========================================
+    let myId = localStorage.getItem('secure_call_id');
+    if (!myId) {
+        myId = Math.floor(1000 + Math.random() * 9000).toString();
+        localStorage.setItem('secure_call_id', myId);
+    }
+    document.getElementById('my-id-display').innerText = `ID: ${myId}`;
+
+    function loadContacts() {
+        const contacts = JSON.parse(localStorage.getItem('secure_contacts') || '[]');
+        const list = document.getElementById('contact-list');
+        list.innerHTML = '';
+        contacts.forEach(c => {
+            const div = document.createElement('div');
+            div.className = 'contact-item';
+            div.innerHTML = `<span>${c.name}</span> <span>${c.id}</span>`;
+            div.onclick = () => document.getElementById('friend-id-input').value = c.id;
+            list.appendChild(div);
+        });
+    }
+
+    function saveContact() {
+        const name = document.getElementById('contact-name').value.trim();
+        const id = document.getElementById('contact-id').value.trim();
+        if(!name || id.length !== 4) return alert("Valid Name and 4-digit ID required");
+        const contacts = JSON.parse(localStorage.getItem('secure_contacts') || '[]');
+        contacts.push({name, id});
+        localStorage.setItem('secure_contacts', JSON.stringify(contacts));
+        document.getElementById('contact-name').value = '';
+        document.getElementById('contact-id').value = '';
+        loadContacts();
+    }
+    loadContacts();
+
+    // ==========================================
+    // 3. WEBRTC GLOBALS
+    // ==========================================
+    const rtcConfig = {
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'turn:global.relay.metered.ca:80', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' },
+            { urls: 'turn:global.relay.metered.ca:443', username: '6aab54034dc79a1202170b90', credential: 'mgAvGdQTO/UdvH3p' }
+        ]
+    };
+
+    let localStream;
+    let peerConnection;
+    let dataChannel;
+    let currentRoomId = null;
+    let partnerId = null;
+    let isCaller = false; 
+
+    const myRingRef = database.ref(`users/${myId}/ring`);
+    const dialScreen = document.getElementById('dial-screen');
+    const incomingScreen = document.getElementById('incoming-screen');
+    const activeScreen = document.getElementById('active-call-screen');
+    const remoteVideo = document.getElementById('remote-video');
+    const localVideo = document.getElementById('local-video');
+
+    // ==========================================
+    // 4. CALLING LOGIC
+    // ==========================================
+    myRingRef.on('value', (snapshot) => {
+        const ringData = snapshot.val();
+        if (ringData && ringData.caller) {
+            partnerId = ringData.caller;
+            currentRoomId = getRoomId(myId, partnerId);
+            document.getElementById('caller-id-display').innerText = `From: ${partnerId}`;
+            dialScreen.style.display = 'none';
+            incomingScreen.style.display = 'block';
+        } else if (incomingScreen.style.display === 'block') {
+            resetCallUI();
+        }
+    });
+
+    document.getElementById('call-btn').onclick = async () => {
+        const targetId = document.getElementById('friend-id-input').value.trim();
+        if (targetId.length !== 4) return alert("Valid 4-digit ID required.");
+        if (targetId === myId) return alert("Cannot call yourself.");
+
+        try {
+            document.getElementById('dial-status').innerText = "Starting Camera/Mic...";
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            localVideo.srcObject = localStream;
+            
+            partnerId = targetId;
+            currentRoomId = getRoomId(myId, partnerId);
+            isCaller = true;
+            
+            document.getElementById('dial-status').innerText = `Ringing ${partnerId}...`;
+            await database.ref(`calls/${currentRoomId}`).set(null); 
+            
+            createPeerConnection();
+
+            // P2P Chat: Caller creates the data channel
+            dataChannel = peerConnection.createDataChannel("chat");
+            setupDataChannel();
+
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            await database.ref(`calls/${currentRoomId}/offer`).set({ type: offer.type, sdp: offer.sdp });
+            await database.ref(`users/${partnerId}/ring`).set({ caller: myId });
+
+            database.ref(`calls/${currentRoomId}/answer`).on('value', async (snapshot) => {
+                const answer = snapshot.val();
+                if (answer && peerConnection && !peerConnection.currentRemoteDescription) {
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+                    showActiveCall();
+                    database.ref(`calls/${currentRoomId}/calleeCandidates`).on('child_added', (snap) => {
+                        if (snap.val()) peerConnection.addIceCandidate(new RTCIceCandidate(snap.val())).catch(console.error);
+                    });
+                }
+            });
+            listenForHangup();
+        } catch (err) { alert("Camera/Mic required!"); document.getElementById('dial-status').innerText = "Ready to call."; }
+    };
+
+    document.getElementById('answer-btn').onclick = async () => {
+        try {
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            localVideo.srcObject = localStream;
+            isCaller = false;
+            createPeerConnection();
+            
+            const offerSnap = await database.ref(`calls/${currentRoomId}/offer`).once('value');
+            const offer = offerSnap.val();
+            
+            if (offer) {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                await database.ref(`calls/${currentRoomId}/answer`).set({ type: answer.type, sdp: answer.sdp });
+
+                showActiveCall();
+                await myRingRef.remove();
+                
+                database.ref(`calls/${currentRoomId}/callerCandidates`).on('child_added', (snap) => {
+                    if (snap.val()) peerConnection.addIceCandidate(new RTCIceCandidate(snap.val())).catch(console.error);
+                });
+                listenForHangup();
+            }
+        } catch (err) { alert("Camera/Mic required!"); }
+    };
+
+    document.getElementById('decline-btn').onclick = () => endCall();
+    document.getElementById('end-btn').onclick = () => endCall();
+
+    async function endCall() {
+        if (currentRoomId) await database.ref(`calls/${currentRoomId}`).remove();
+        await myRingRef.remove();
+        resetCallUI();
+    }
+
+    function listenForHangup() {
+        if (!currentRoomId) return; 
+        database.ref(`calls/${currentRoomId}`).on('value', (snapshot) => {
+            if (!snapshot.exists()) resetCallUI();
+        });
+    }
+
+    // ==========================================
+    // 5. WEBRTC ENGINE & VISUALIZER
+    // ==========================================
+    let audioCtx, analyser, animationId;
+
+    function createPeerConnection() {
+        peerConnection = new RTCPeerConnection(rtcConfig);
+        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+        peerConnection.onicecandidate = (event) => {
+            if (event.candidate && currentRoomId) {
+                const nodeName = isCaller ? 'callerCandidates' : 'calleeCandidates';
+                database.ref(`calls/${currentRoomId}/${nodeName}`).push(event.candidate.toJSON());
+            }
+        };
+
+        peerConnection.oniceconnectionstatechange = () => {
+            const state = peerConnection.iceConnectionState;
+            const statusText = document.getElementById('call-duration');
+            if (state === "checking") statusText.innerText = "Bypassing firewalls...";
+            if (state === "connected") statusText.innerText = "Secure Connection Active! 🟢";
+            if (state === "failed") statusText.innerText = "Connection Blocked 🔴";
+        };
+
+        // Handle incoming stream (Video + Audio)
+        peerConnection.ontrack = (event) => {
+            if (remoteVideo.srcObject !== event.streams[0]) {
+                remoteVideo.srcObject = event.streams[0];
+                remoteVideo.play().catch(e => console.error(e));
+                
+                // Initialize Canvas Visualizer when audio arrives
+                if(event.track.kind === 'audio') setupVisualizer(event.streams[0]);
+            }
+        };
+
+        // P2P Chat: Callee receives the data channel
+        peerConnection.ondatachannel = (event) => {
+            dataChannel = event.channel;
+            setupDataChannel();
+        };
+    }
+
+    function setupVisualizer(stream) {
+        const canvas = document.getElementById('audio-visualizer');
+        const canvasCtx = canvas.getContext('2d');
+        
+        // Use standard or webkit AudioContext
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioCtx.createMediaStreamSource(stream);
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+
+        const bufferLength = analyser.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+
+        function draw() {
+            animationId = requestAnimationFrame(draw);
+            analyser.getByteFrequencyData(dataArray);
+
+            canvasCtx.fillStyle = '#252525';
+            canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+
+            const barWidth = (canvas.width / bufferLength) * 2.5;
+            let barHeight;
+            let x = 0;
+
+            for (let i = 0; i < bufferLength; i++) {
+                barHeight = dataArray[i] / 2;
+                canvasCtx.fillStyle = '#4dabf7';
+                canvasCtx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+                x += barWidth + 1;
+            }
+        }
+        draw();
+    }
+
+    // ==========================================
+    // 6. HARDWARE CONTROLS & SCREEN SHARE
+    // ==========================================
+    document.getElementById('mute-btn').onclick = function() {
+        const audioTrack = localStream.getAudioTracks()[0];
+        audioTrack.enabled = !audioTrack.enabled;
+        this.innerText = audioTrack.enabled ? "Mute Mic" : "Unmute Mic";
+        this.classList.toggle('active');
+    };
+
+    document.getElementById('camera-btn').onclick = function() {
+        const videoTrack = localStream.getVideoTracks()[0];
+        videoTrack.enabled = !videoTrack.enabled;
+        this.innerText = videoTrack.enabled ? "Stop Cam" : "Start Cam";
+        this.classList.toggle('active');
+    };
+
+    document.getElementById('screen-btn').onclick = async function() {
+        try {
+            // Ask for screen display permission
+            const displayStream = await navigator.mediaDevices.getDisplayMedia({video: true});
+            const screenTrack = displayStream.getVideoTracks()[0];
+            
+            // Find the active WebRTC video sender and seamlessly replace the camera track with the screen track
+            const sender = peerConnection.getSenders().find(s => s.track.kind === 'video');
+            sender.replaceTrack(screenTrack);
+            
+            // Update local mini-preview
+            localVideo.srcObject = displayStream;
+            this.innerText = "Sharing Screen (Stop)";
+            this.classList.add('active');
+
+            // When user clicks "Stop Sharing" on browser UI, revert to camera
+            screenTrack.onended = () => {
+                const camTrack = localStream.getVideoTracks()[0];
+                sender.replaceTrack(camTrack);
+                localVideo.srcObject = localStream;
+                this.innerText = "Share Screen";
+                this.classList.remove('active');
+            };
+        } catch(err) {
+            console.error("Screen share failed", err);
+        }
+    };
+
+    // ==========================================
+    // 7. P2P ENCRYPTED CHAT
+    // ==========================================
+    function setupDataChannel() {
+        dataChannel.onmessage = (event) => {
+            appendMessage(event.data, 'them');
+        };
+    }
+
+    document.getElementById('send-chat-btn').onclick = () => {
+        const input = document.getElementById('chat-input');
+        const msg = input.value.trim();
+        if(msg && dataChannel && dataChannel.readyState === 'open') {
+            dataChannel.send(msg);
+            appendMessage(msg, 'me');
+            input.value = '';
+        }
+    };
+
+    function appendMessage(text, sender) {
+        const box = document.getElementById('chat-messages');
+        const div = document.createElement('div');
+        div.className = `chat-msg ${sender}`;
+        div.innerText = text;
+        box.appendChild(div);
+        box.scrollTop = box.scrollHeight;
+    }
+
+    // ==========================================
+    // 8. UTILITIES
+    // ==========================================
+    function getRoomId(id1, id2) { return id1 < id2 ? `${id1}_${id2}` : `${id2}_${id1}`; }
+
+    function showActiveCall() {
+        dialScreen.style.display = 'none';
+        incomingScreen.style.display = 'none';
+        activeScreen.style.display = 'block';
+        
+        // Ensure chat is cleared for new calls
+        document.getElementById('chat-messages').innerHTML = '';
+        
+        // Resize canvas to fit its container dynamically
+        const canvas = document.getElementById('audio-visualizer');
+        canvas.width = canvas.parentElement.clientWidth;
+    }
+
+    function resetCallUI() {
+        if (peerConnection) { peerConnection.close(); peerConnection = null; }
+        if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+        if (dataChannel) { dataChannel.close(); dataChannel = null; }
+        
+        // Stop AudioContext visualizer
+        if (animationId) cancelAnimationFrame(animationId);
+        if (audioCtx) { audioCtx.close(); audioCtx = null; }
+        
+        if (currentRoomId) {
+            database.ref(`calls/${currentRoomId}`).off();
+            database.ref(`calls/${currentRoomId}/answer`).off();
+            database.ref(`calls/${currentRoomId}/callerCandidates`).off();
+            database.ref(`calls/${currentRoomId}/calleeCandidates`).off();
+        }
+
+        currentRoomId = null; partnerId = null;
+        
+        dialScreen.style.display = 'block';
+        incomingScreen.style.display = 'none';
+        activeScreen.style.display = 'none';
+        document.getElementById('dial-status').innerText = "Ready to call.";
+        document.getElementById('friend-id-input').value = "";
+        
+        // Reset Control buttons
+        document.getElementById('mute-btn').innerText = 'Mute Mic';
+        document.getElementById('mute-btn').classList.remove('active');
+        document.getElementById('camera-btn').innerText = 'Stop Cam';
+        document.getElementById('camera-btn').classList.remove('active');
+        document.getElementById('screen-btn').innerText = 'Share Screen';
+        document.getElementById('screen-btn').classList.remove('active');
+    }
+
+    window.addEventListener('beforeunload', () => {
+        if (currentRoomId) database.ref(`calls/${currentRoomId}`).remove();
+        myRingRef.remove();
+    });
+</script>
+
+</body>
+</html>
